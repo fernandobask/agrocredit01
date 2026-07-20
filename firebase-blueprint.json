@@ -1,0 +1,24 @@
+{
+  "entities": {
+    "Simulation": {
+      "title": "Simulation",
+      "description": "A saved rural credit simulation",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "name": { "type": "string", "maxLength": 100 },
+        "contrato": { "type": "object" },
+        "cenarios": { "type": "array" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["userId", "name", "contrato", "cenarios", "createdAt", "updatedAt"]
+    }
+  },
+  "firestore": {
+    "simulations/{simulationId}": {
+      "schema": { "$ref": "#/entities/Simulation" },
+      "description": "User saved simulations"
+    }
+  }
+}

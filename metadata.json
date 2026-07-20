@@ -1,0 +1,6 @@
+{
+  "name": "Simulador de Renegociação de Crédito Rural",
+  "description": "Ferramenta avançada para simulação, análise e renegociação de cédulas de crédito rural (CPR), permitindo alteração de indexadores (CDI, Selic, IPCA, TR) com integração ao Banco Central do Brasil, extração de dados via IA a partir de arquivos e projeção de fluxo de caixa.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
