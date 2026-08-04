@@ -20,7 +20,7 @@ async function fetchBCBSeries(seriesId: number, fallback: number): Promise<numbe
     const url = `https://api.bcb.gov.br/dados/serie/bcdata.sgs.${seriesId}/dados/ultimos/1?formato=json`;
     const res = await fetch(url, { 
       headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AI-Studio-Auditor" },
-      signal: AbortSignal.timeout(7000) 
+      signal: AbortSignal.timeout(3500) 
     });
     if (!res.ok) {
       throw new Error(`BCB SGS returned status ${res.status}`);
@@ -45,7 +45,7 @@ async function fetchBCBSeries12mAcc(seriesId: number, fallback: number): Promise
     const url = `https://api.bcb.gov.br/dados/serie/bcdata.sgs.${seriesId}/dados/ultimos/12?formato=json`;
     const res = await fetch(url, { 
       headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AI-Studio-Auditor" },
-      signal: AbortSignal.timeout(7000) 
+      signal: AbortSignal.timeout(3500) 
     });
     if (!res.ok) {
       throw new Error(`BCB SGS returned status ${res.status}`);
@@ -75,35 +75,40 @@ async function fetchBCBSeries12mAcc(seriesId: number, fallback: number): Promise
 app.get("/api/indexadores", async (req, res) => {
   console.log("[API] Fetching real-time indexer rates from Banco Central do Brasil...");
   
-  // Official series IDs:
-  // - Selic Meta: 432 (% a.a.)
-  // - IPCA acumulado 12 meses: 13522 (% a.a.)
-  // - INPC mensal: 188 (acumulado em 12 meses via juros compostos)
-  // - TR mensal: 1751 (acumulado em 12 meses)
-  // - CDI (taxa anualizada): 4389 (% a.a.)
-  
   const defaultSelic = 14.25;
   const defaultIPCA = 4.64;
-  const defaultINPC = 4.33; // 12-month compound accumulated INPC rate
+  const defaultINPC = 4.33;
   const defaultTR = 1.25;
   const defaultCDI = 14.15;
 
-  const [selic, ipca, inpc, tr, cdi] = await Promise.all([
-    fetchBCBSeries(432, defaultSelic),
-    fetchBCBSeries(13522, defaultIPCA),
-    fetchBCBSeries12mAcc(188, defaultINPC),
-    fetchBCBSeries12mAcc(1751, defaultTR),
-    fetchBCBSeries(4389, defaultCDI),
-  ]);
+  try {
+    const [selic, ipca, inpc, tr, cdi] = await Promise.all([
+      fetchBCBSeries(432, defaultSelic),
+      fetchBCBSeries(13522, defaultIPCA),
+      fetchBCBSeries12mAcc(188, defaultINPC),
+      fetchBCBSeries12mAcc(1751, defaultTR),
+      fetchBCBSeries(4389, defaultCDI),
+    ]);
 
-  res.json({
-    CDI: cdi,
-    SELIC: selic,
-    IPCA: ipca,
-    INPC: inpc,
-    TR: tr,
-    PRE: 0 // pre-fixed rate is base 0 (user defines interest rate directly)
-  });
+    res.json({
+      CDI: cdi,
+      SELIC: selic,
+      IPCA: ipca,
+      INPC: inpc,
+      TR: tr,
+      PRE: 0
+    });
+  } catch (err: any) {
+    console.error("[API] Indexadores handler error, returning fallbacks:", err?.message);
+    res.json({
+      CDI: defaultCDI,
+      SELIC: defaultSelic,
+      IPCA: defaultIPCA,
+      INPC: defaultINPC,
+      TR: defaultTR,
+      PRE: 0
+    });
+  }
 });
 
 // 1b. Get historical indexer rates for the last 12 months

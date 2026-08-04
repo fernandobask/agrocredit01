@@ -31,6 +31,7 @@ import {
   Save,
   LogIn,
   LogOut,
+  User as UserIcon,
   Cloud,
   Database,
   MessageSquare,
@@ -42,7 +43,10 @@ import {
   Search,
   Filter,
   Zap,
-  ArrowRight
+  ArrowRight,
+  ShieldCheck,
+  UserCheck,
+  Clock
 } from "lucide-react";
 import { motion, AnimatePresence, useDragControls } from "motion/react";
 import {
@@ -70,7 +74,8 @@ import {
   ModalidadeContrato,
   Laudo,
   AssociatedDocument,
-  ContractHistoryEntry
+  ContractHistoryEntry,
+  AuditLogEntry
 } from "./types";
 import {
   formatCurrency,
@@ -80,11 +85,37 @@ import {
   processarCenario,
   exportToCSV
 } from "./utils/math";
-import { auth, loginWithGoogle, logout, db, handleFirestoreError, OperationType, getAccessToken } from "./firebase";
+import { MemoriaCalculoModal } from "./components/MemoriaCalculoModal";
+import { SimuladorNegociacaoModal } from "./components/SimuladorNegociacaoModal";
+import { AuthModal } from "./components/AuthModal";
+import { auth, loginWithGoogle, loginAnonymously, checkRedirectLoginResult, logout, db, handleFirestoreError, OperationType, getAccessToken } from "./firebase";
 import { onAuthStateChanged, User } from "firebase/auth";
 import { collection, doc, setDoc, getDocs, deleteDoc, query, where } from "firebase/firestore";
 
 import ReactMarkdown from "react-markdown";
+
+function GoogleIcon({ className = "w-4 h-4" }: { className?: string }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24">
+      <path
+        fill="#4285F4"
+        d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"
+      />
+      <path
+        fill="#34A853"
+        d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"
+      />
+      <path
+        fill="#FBBC05"
+        d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.06H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.94l2.85-2.22.81-.63z"
+      />
+      <path
+        fill="#EA4335"
+        d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.06l3.66 2.84c.87-2.6 3.3-4.52 6.16-4.52z"
+      />
+    </svg>
+  );
+}
 
 function sanitizeFirestoreData(obj: any): any {
   if (obj === null || obj === undefined) {
@@ -301,6 +332,37 @@ export default function App() {
   // Firebase Auth State
   const [user, setUser] = useState<User | null>(null);
   const [saving, setSaving] = useState(false);
+  const [isAuthModalOpen, setIsAuthModalOpen] = useState(false);
+
+  const openAuthModal = () => {
+    setIsAuthModalOpen(true);
+  };
+
+  const handleGoogleLogin = async () => {
+    try {
+      const res = await loginWithGoogle();
+      if (res?.user) {
+        showToast(`Bem-vindo(a), ${res.user.displayName || res.user.email}! Login efetuado com sucesso.`, "success");
+      }
+    } catch (err: any) {
+      console.error("Erro no login Google:", err);
+      if (err.code === 'auth/popup-closed-by-user' || err.code === 'auth/cancelled-popup-request') {
+        showToast("Login do Google foi cancelado.", "info");
+      } else {
+        showToast("Abrindo alternativas de login no Firebase...", "info");
+        openAuthModal();
+      }
+    }
+  };
+
+  const handleGoogleLogout = async () => {
+    try {
+      await logout();
+      showToast("Sessão encerrada com sucesso.", "info");
+    } catch (err: any) {
+      showToast("Erro ao encerrar sessão: " + err.message, "error");
+    }
+  };
 
   // Saved Simulations State
   const [savedSimulations, setSavedSimulations] = useState<any[]>([]);
@@ -308,6 +370,62 @@ export default function App() {
   const [emitenteFilter, setEmitenteFilter] = useState("");
   const [loadingSimulations, setLoadingSimulations] = useState(false);
   const [loadedSimulationId, setLoadedSimulationId] = useState<string | null>(null);
+
+  // Memória de Cálculo Auditável Modal State
+  const [memoriaModalState, setMemoriaModalState] = useState<{
+    isOpen: boolean;
+    parcela?: ProjecaoParcela;
+    cenarioNome?: string;
+    indexadorNome?: string;
+    taxaJurosAnual?: number;
+    valorIndexadorAnual?: number;
+  }>({ isOpen: false });
+
+  // Simulador de Negociação Modal State
+  const [simuladorModalOpen, setSimuladorModalOpen] = useState(false);
+
+  const handleSaveProposalToFirestore = async (proposalData: any) => {
+    if (!user) {
+      showToast("Faça login no Firebase para salvar propostas no banco de dados.", "info");
+      return;
+    }
+    try {
+      const docRef = doc(collection(db, "propostas_negociacao"));
+      await setDoc(docRef, {
+        id: docRef.id,
+        userId: user.uid,
+        contratoNumero: contrato.numero,
+        emitente: contrato.emitente,
+        proposalData,
+        createdAt: new Date().toISOString()
+      });
+      showToast("Proposta de negociação salva no Firestore com sucesso!", "success");
+    } catch (err: any) {
+      showToast("Erro ao salvar proposta: " + err.message, "error");
+    }
+  };
+
+  const openMemoriaCalculo = (
+    parcela?: ProjecaoParcela,
+    cenarioNome?: string,
+    indexadorNome?: string,
+    taxaJurosAnual?: number
+  ) => {
+    const idxNome = indexadorNome || contrato.indexadorOriginal;
+    const valIdx = indexadores[idxNome] || 0;
+    setMemoriaModalState({
+      isOpen: true,
+      parcela,
+      cenarioNome: cenarioNome || "Contrato Vigente",
+      indexadorNome: idxNome,
+      taxaJurosAnual: taxaJurosAnual !== undefined ? taxaJurosAnual : contrato.taxaJurosAnual,
+      valorIndexadorAnual: valIdx
+    });
+  };
+
+  const closeMemoriaCalculo = () => {
+    setMemoriaModalState(prev => ({ ...prev, isOpen: false }));
+  };
 
   // Custom non-blocking Toast and Confirmation Modal states for sandbox/iframe compatibility
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' | 'info' } | null>(null);
@@ -454,6 +572,11 @@ export default function App() {
   });
 
   useEffect(() => {
+    checkRedirectLoginResult().then((res) => {
+      if (res?.user) {
+        showToast(`Login efetuado com sucesso! Bem-vindo(a), ${res.user.displayName || res.user.email}`, "success");
+      }
+    });
     const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
       setUser(currentUser);
     });
@@ -474,8 +597,8 @@ export default function App() {
         const data = await res.json();
         setHistoricalIndexadores(data);
       }
-    } catch (err) {
-      console.error("Failed to fetch historical indexers:", err);
+    } catch {
+      // Keep default historical mock data silently
     } finally {
       setLoadingHistorical(false);
     }
@@ -488,20 +611,20 @@ export default function App() {
       if (res.ok) {
         const data = await res.json();
         setIndexadores({
-          CDI: data.CDI,
-          SELIC: data.SELIC,
-          IPCA: data.IPCA,
-          INPC: data.INPC,
-          TR: data.TR,
+          CDI: typeof data.CDI === "number" ? data.CDI : 14.15,
+          SELIC: typeof data.SELIC === "number" ? data.SELIC : 14.25,
+          IPCA: typeof data.IPCA === "number" ? data.IPCA : 4.64,
+          INPC: typeof data.INPC === "number" ? data.INPC : 4.33,
+          TR: typeof data.TR === "number" ? data.TR : 1.25,
           PRE: 0.00
         });
         setIndexadoresStatus("success");
         setLastUpdated(new Date().toLocaleTimeString("pt-BR") + " (BACEN/SGS)");
       } else {
-        throw new Error("Resposta da API com erro");
+        setIndexadoresStatus("warning");
+        setLastUpdated("Uso de valores referenciais de mercado");
       }
-    } catch (err) {
-      console.error("Failed to fetch BCB indexers:", err);
+    } catch {
       setIndexadoresStatus("warning");
       setLastUpdated("Uso de valores referenciais de mercado");
     } finally {
@@ -511,28 +634,90 @@ export default function App() {
 
   const handleSaveSimulation = async () => {
     if (!user) {
-      showToast("Por favor, faça login para salvar sua simulação.", "info");
+      showToast("Por favor, faça login com a conta Google para salvar sua simulação.", "info");
+      handleGoogleLogin();
       return;
     }
     
     setSaving(true);
     try {
       const isEditing = !!loadedSimulationId;
+      const currentNum = contrato.numero?.trim()?.toLowerCase();
+
+      // Duplicate contract check if saving new
+      if (!isEditing && currentNum) {
+        const duplicateSim = savedSimulations.find(s => 
+          (s.contractData?.numero?.trim()?.toLowerCase() === currentNum ||
+           s.contrato?.numero?.trim()?.toLowerCase() === currentNum) &&
+          s.id !== loadedSimulationId
+        );
+        
+        if (duplicateSim) {
+          const existingContrato = duplicateSim.contractData || duplicateSim.contrato;
+          const diffs: string[] = [];
+          if (existingContrato.valorPrincipal !== contrato.valorPrincipal) {
+            diffs.push(`Valor Principal: ${formatCurrency(existingContrato.valorPrincipal)} ➔ ${formatCurrency(contrato.valorPrincipal)}`);
+          }
+          if (existingContrato.taxaJurosAnual !== contrato.taxaJurosAnual) {
+            diffs.push(`Taxa de Juros: ${existingContrato.taxaJurosAnual}% ➔ ${contrato.taxaJurosAnual}%`);
+          }
+          if (existingContrato.indexadorOriginal !== contrato.indexadorOriginal) {
+            diffs.push(`Indexador: ${existingContrato.indexadorOriginal} ➔ ${contrato.indexadorOriginal}`);
+          }
+          if (existingContrato.emitente !== contrato.emitente) {
+            diffs.push(`Emitente: ${existingContrato.emitente || "S/N"} ➔ ${contrato.emitente || "S/N"}`);
+          }
+
+          setDuplicateConflict({
+            existingSim: duplicateSim,
+            novoContrato: contrato,
+            differences: diffs
+          });
+          setActiveNav("dashboard");
+          showToast(`Atenção: O contrato nº ${contrato.numero} já consta no banco de dados do sistema!`, "info");
+          setSaving(false);
+          return;
+        }
+      }
+
       const simulationId = loadedSimulationId || `${user.uid}_${Date.now()}`;
-      
       const existingSim = isEditing ? savedSimulations.find(s => s.id === loadedSimulationId) : null;
       
+      const userEmail = user.email || "analista@agro.com";
+      const userName = user.displayName || userEmail.split("@")[0];
+
+      const auditEntry: AuditLogEntry = {
+        id: `log_${Date.now()}`,
+        timestamp: new Date().toISOString(),
+        userId: user.uid,
+        userName: userName,
+        userEmail: userEmail,
+        action: isEditing ? "Atualização de Simulação" : "Criação de Contrato",
+        details: isEditing 
+          ? `Simulação do Contrato Nº ${contrato.numero || "S/N"} re-salva por ${userName}`
+          : `Novo contrato Nº ${contrato.numero || "S/N"} cadastrado por ${userName}`
+      };
+
       const simData = {
         userId: user.uid,
+        createdById: existingSim?.createdById || user.uid,
+        createdByName: existingSim?.createdByName || userName,
+        createdByEmail: existingSim?.createdByEmail || userEmail,
+        createdAt: existingSim?.createdAt || new Date().toISOString(),
+
+        updatedById: user.uid,
+        updatedByName: userName,
+        updatedByEmail: userEmail,
+        updatedAt: new Date().toISOString(),
+
         name: existingSim?.name || `Simulação - ${contrato.numero || "Sem Nome"}`,
         contractData: contrato,
         scenariosData: cenarios,
         laudo: laudo || null,
         associatedDocuments: existingSim?.associatedDocuments || [],
         history: existingSim?.history || [],
-        version: existingSim ? (existingSim.version || 1) + 1 : 1,
-        createdAt: existingSim?.createdAt || new Date().toISOString(),
-        updatedAt: new Date().toISOString()
+        auditLogs: [...(existingSim?.auditLogs || []), auditEntry],
+        version: existingSim ? (existingSim.version || 1) + 1 : 1
       };
       
       await setDoc(doc(db, "simulations", simulationId), sanitizeFirestoreData(simData));
@@ -561,17 +746,39 @@ export default function App() {
       const simulationId = loadedSimulationId || `${user.uid}_${Date.now()}`;
       const existingSim = loadedSimulationId ? savedSimulations.find(s => s.id === loadedSimulationId) : null;
 
+      const userEmail = user.email || "analista@agro.com";
+      const userName = user.displayName || userEmail.split("@")[0];
+
+      const auditEntry: AuditLogEntry = {
+        id: `log_${Date.now()}`,
+        timestamp: new Date().toISOString(),
+        userId: user.uid,
+        userName: userName,
+        userEmail: userEmail,
+        action: "Salvamento de Laudo Técnico",
+        details: `Laudo de Irregularidades do Contrato Nº ${contrato.numero || "S/N"} gerado/salvo por ${userName}`
+      };
+
       const simData = {
         userId: user.uid,
+        createdById: existingSim?.createdById || user.uid,
+        createdByName: existingSim?.createdByName || userName,
+        createdByEmail: existingSim?.createdByEmail || userEmail,
+        createdAt: existingSim?.createdAt || new Date().toISOString(),
+
+        updatedById: user.uid,
+        updatedByName: userName,
+        updatedByEmail: userEmail,
+        updatedAt: new Date().toISOString(),
+
         name: existingSim?.name || `Simulação - ${contrato.numero || "Sem Nome"}`,
         contractData: contrato,
         scenariosData: cenarios,
         laudo: laudo,
         associatedDocuments: existingSim?.associatedDocuments || [],
         history: existingSim?.history || [],
-        version: existingSim ? (existingSim.version || 1) : 1,
-        createdAt: existingSim?.createdAt || new Date().toISOString(),
-        updatedAt: new Date().toISOString()
+        auditLogs: [...(existingSim?.auditLogs || []), auditEntry],
+        version: existingSim ? (existingSim.version || 1) : 1
       };
 
       await setDoc(doc(db, "simulations", simulationId), sanitizeFirestoreData(simData));
@@ -754,16 +961,38 @@ export default function App() {
 
               if (user) {
                 const simulationId = `${user.uid}_${Date.now()}`;
+                const userEmail = user.email || "analista@agro.com";
+                const userName = user.displayName || userEmail.split("@")[0];
+
+                const auditEntry: AuditLogEntry = {
+                  id: `log_${Date.now()}`,
+                  timestamp: new Date().toISOString(),
+                  userId: user.uid,
+                  userName: userName,
+                  userEmail: userEmail,
+                  action: "Upload de Contrato (PDF/OCR)",
+                  details: `Contrato Nº ${novoContrato.numero || "S/N"} subido e processado via OCR/IA por ${userName}`
+                };
+
                 const simData = {
                   userId: user.uid,
+                  createdById: user.uid,
+                  createdByName: userName,
+                  createdByEmail: userEmail,
+                  createdAt: new Date().toISOString(),
+
+                  updatedById: user.uid,
+                  updatedByName: userName,
+                  updatedByEmail: userEmail,
+                  updatedAt: new Date().toISOString(),
+
                   name: `Upload Auto - ${novoContrato.numero || "Sem Nome"}`,
                   contractData: novoContrato,
                   scenariosData: cenarios,
                   version: 1,
                   history: [],
                   associatedDocuments: [],
-                  createdAt: new Date().toISOString(),
-                  updatedAt: new Date().toISOString()
+                  auditLogs: [auditEntry]
                 };
                 
                 setDoc(doc(db, "simulations", simulationId), sanitizeFirestoreData(simData))
@@ -876,17 +1105,34 @@ export default function App() {
     const { existingSim, novoContrato } = duplicateConflict;
     setSaving(true);
     try {
+      const userEmail = user.email || "analista@agro.com";
+      const userName = user.displayName || userEmail.split("@")[0];
+
+      const auditEntry: AuditLogEntry = {
+        id: `log_${Date.now()}`,
+        timestamp: new Date().toISOString(),
+        userId: user.uid,
+        userName: userName,
+        userEmail: userEmail,
+        action: "Sobrescrita de Contrato Duplicado",
+        details: `Contrato Nº ${novoContrato.numero} sobrescrito e unificado no banco por ${userName}`
+      };
+
       const simData = {
         ...existingSim,
         contractData: novoContrato,
-        updatedAt: new Date().toISOString()
+        updatedById: user.uid,
+        updatedByName: userName,
+        updatedByEmail: userEmail,
+        updatedAt: new Date().toISOString(),
+        auditLogs: [...(existingSim.auditLogs || []), auditEntry]
       };
       await setDoc(doc(db, "simulations", existingSim.id), sanitizeFirestoreData(simData));
       await fetchSavedSimulations();
       setContrato(novoContrato);
       setDuplicateConflict(null);
       setActiveNav("dashboard");
-      showToast("Contrato sobrescrito com sucesso!", "success");
+      showToast("Contrato sobrescrito e unificado com sucesso!", "success");
     } catch (err) {
       handleFirestoreError(err, OperationType.UPDATE, `simulations/${existingSim.id}`);
     } finally {
@@ -901,12 +1147,24 @@ export default function App() {
     try {
       const currentVersion = existingSim.version || 1;
       const newVersion = currentVersion + 1;
+      const userEmail = user.email || "analista@agro.com";
+      const userName = user.displayName || userEmail.split("@")[0];
       
       const historyEntry: ContractHistoryEntry = {
         version: currentVersion,
         contractData: existingSim.contractData || existingSim.contrato,
         updatedAt: existingSim.updatedAt || existingSim.createdAt || new Date().toISOString(),
         changeSummary: changeSummary || "Atualização de dados via upload de novo documento"
+      };
+
+      const auditEntry: AuditLogEntry = {
+        id: `log_${Date.now()}`,
+        timestamp: new Date().toISOString(),
+        userId: user.uid,
+        userName: userName,
+        userEmail: userEmail,
+        action: `Nova Versão Criada (v${newVersion})`,
+        details: `Versão v${newVersion} gerada por ${userName}. Motivo: ${changeSummary || "Detecção de duplicidade"}`
       };
 
       const existingHistory = existingSim.history || [];
@@ -917,7 +1175,11 @@ export default function App() {
         contractData: novoContrato,
         version: newVersion,
         history: [...existingHistory, historyEntry],
-        updatedAt: new Date().toISOString()
+        updatedById: user.uid,
+        updatedByName: userName,
+        updatedByEmail: userEmail,
+        updatedAt: new Date().toISOString(),
+        auditLogs: [...(existingSim.auditLogs || []), auditEntry]
       };
 
       await setDoc(doc(db, "simulations", existingSim.id), sanitizeFirestoreData(simData));
@@ -937,6 +1199,9 @@ export default function App() {
     const sim = savedSimulations.find(s => s.id === simId);
     if (!sim || !user) return;
     
+    const userEmail = user.email || "analista@agro.com";
+    const userName = user.displayName || userEmail.split("@")[0];
+
     const newDoc: AssociatedDocument = {
       id: `doc_${Date.now()}`,
       uploadDate: new Date().toISOString(),
@@ -948,11 +1213,25 @@ export default function App() {
       mimeType: docData.mimeType
     };
     
+    const auditEntry: AuditLogEntry = {
+      id: `log_${Date.now()}`,
+      timestamp: new Date().toISOString(),
+      userId: user.uid,
+      userName: userName,
+      userEmail: userEmail,
+      action: "Anexo de Documento do Banco",
+      details: `Documento '${newDoc.name}' (${newDoc.type}) anexado ao contrato por ${userName}`
+    };
+
     const updatedDocs = [...(sim.associatedDocuments || []), newDoc];
     const updatedSim = {
       ...sim,
       associatedDocuments: updatedDocs,
-      updatedAt: new Date().toISOString()
+      updatedById: user.uid,
+      updatedByName: userName,
+      updatedByEmail: userEmail,
+      updatedAt: new Date().toISOString(),
+      auditLogs: [...(sim.auditLogs || []), auditEntry]
     };
     
     try {
@@ -1418,7 +1697,7 @@ export default function App() {
     }
   };
 
-  // Export CSV
+  // Export CSV / Excel compatible file
   const triggerCSVExport = () => {
     const originalResult: ResultadoCenario = {
       id: "original",
@@ -1443,51 +1722,186 @@ export default function App() {
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
+    showToast("Planilha Excel/CSV baixada com sucesso (Resumo de Cenários e Fluxos)!", "success");
   };
 
-  // Trigger Print layout to Save PDF cleanly
+  // Dedicated Professional Printable Window for PDF Generation
   const triggerPDFExport = () => {
-    window.print();
-  };
-
-  const [exportingDrive, setExportingDrive] = useState(false);
-  const handleExportToDrive = async () => {
-    const token = getAccessToken();
-    if (!token) {
-      showToast("Faça login com o Google primeiro para exportar para o Drive.", "info");
+    const printWindow = window.open("", "_blank");
+    if (!printWindow) {
+      window.print();
       return;
     }
 
-    setExportingDrive(true);
-    try {
-      const csvData = exportToCSV(resultadosCenarios, contrato);
-      
-      const metadata = {
-        name: `Relatorio_Renegociacao_${contrato.numero}.csv`,
-        mimeType: 'text/csv'
-      };
+    const htmlContent = `
+      <!DOCTYPE html>
+      <html lang="pt-BR">
+        <head>
+          <meta charset="utf-8" />
+          <title>Relatorio_Tecnico_Renegociacao_${contrato.numero || "Contrato"}</title>
+          <style>
+            @page { size: A4 portrait; margin: 12mm; }
+            body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; color: #0f172a; line-height: 1.4; font-size: 11px; margin: 0; padding: 20px; }
+            .header { border-bottom: 2px solid #059669; padding-bottom: 12px; margin-bottom: 16px; display: flex; justify-content: space-between; align-items: flex-start; }
+            .title { font-size: 18px; font-weight: 800; color: #064e3b; text-transform: uppercase; margin: 0; }
+            .subtitle { font-size: 11px; color: #475569; margin-top: 2px; }
+            .meta-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; background: #f8fafc; border: 1px solid #e2e8f0; padding: 12px; border-radius: 8px; margin-bottom: 16px; }
+            .meta-item { display: flex; flex-direction: column; }
+            .meta-label { font-size: 9px; text-transform: uppercase; color: #64748b; font-weight: 700; }
+            .meta-val { font-size: 11px; font-weight: 700; color: #0f172a; }
+            table { width: 100%; border-collapse: collapse; margin-bottom: 16px; font-size: 10px; }
+            th { background: #0f172a; color: #ffffff; font-weight: 700; text-align: left; padding: 6px 8px; font-size: 9px; text-transform: uppercase; }
+            td { border-bottom: 1px solid #e2e8f0; padding: 6px 8px; }
+            tr:nth-child(even) { background: #f8fafc; }
+            .section-title { font-size: 12px; font-weight: 800; color: #0f172a; margin: 16px 0 8px 0; border-left: 4px solid #059669; padding-left: 8px; text-transform: uppercase; }
+            .summary-box { background: #ecfdf5; border: 1px solid #a7f3d0; padding: 12px; border-radius: 8px; margin-bottom: 16px; }
+            .footer { margin-top: 30px; border-top: 1px solid #cbd5e1; pt: 12px; font-size: 9px; color: #64748b; text-align: center; }
+            .signatures { display: flex; justify-content: space-between; margin-top: 40px; }
+            .sig-line { width: 45%; border-top: 1px solid #64748b; text-align: center; padding-top: 4px; font-size: 10px; }
+            @media print {
+              body { padding: 0; }
+            }
+          </style>
+        </head>
+        <body>
+          <div class="header">
+            <div>
+              <h1 class="title">AgroCredit Simulador Pro</h1>
+              <div class="subtitle">Relatório Técnico de Auditoria & Renegociação de Cédula Rural</div>
+            </div>
+            <div style="text-align: right;">
+              <div style="font-weight: 700; color: #059669;">Data: ${new Date().toLocaleDateString("pt-BR")}</div>
+              <div style="font-size: 9px; color: #64748b;">Nº Cédula: ${contrato.numero || "S/N"}</div>
+            </div>
+          </div>
 
-      const form = new FormData();
-      form.append('metadata', new Blob([JSON.stringify(metadata)], { type: 'application/json' }));
-      form.append('file', new Blob([csvData], { type: 'text/csv' }));
+          <div class="meta-grid">
+            <div class="meta-item"><span class="meta-label">Número do Contrato</span><span class="meta-val">${contrato.numero || "N/A"}</span></div>
+            <div class="meta-item"><span class="meta-label">Emitente / Devedor</span><span class="meta-val">${contrato.emitente || "N/A"}</span></div>
+            <div class="meta-item"><span class="meta-label">Instituição Credora</span><span class="meta-val">${contrato.credor || "N/A"}</span></div>
+            <div class="meta-item"><span class="meta-label">Valor Principal</span><span class="meta-val">${formatCurrency(contrato.valorPrincipal)}</span></div>
+            <div class="meta-item"><span class="meta-label">Data de Emissão</span><span class="meta-val">${formatDate(contrato.dataEmissao)}</span></div>
+            <div class="meta-item"><span class="meta-label">Vencimento Final</span><span class="meta-val">${formatDate(contrato.dataVencimento)}</span></div>
+            <div class="meta-item"><span class="meta-label">Taxa Pactuada</span><span class="meta-val">${contrato.taxaJurosAnual}% a.a. + ${contrato.indexadorOriginal}</span></div>
+            <div class="meta-item"><span class="meta-label">Garantia / Produto</span><span class="meta-val">${contrato.produto || "Cédula de Crédito"}</span></div>
+            <div class="meta-item"><span class="meta-label">Status da Auditoria</span><span class="meta-val" style="color: #059669;">Sincronizado & Auditado</span></div>
+          </div>
 
-      const res = await fetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart', {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${token}`
-        },
-        body: form
-      });
+          <div class="section-title">1. Resumo Comparativo dos Cenários de Renegociação</div>
+          <table>
+            <thead>
+              <tr>
+                <th>Cenário</th>
+                <th>Indexador</th>
+                <th>Taxa Fixa</th>
+                <th>Principal Amortizado</th>
+                <th>Total Juros</th>
+                <th>Custo Total Financeiro</th>
+                <th>Economia Relativa</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><strong>Original Vigente</strong></td>
+                <td>${contrato.indexadorOriginal}</td>
+                <td>${contrato.taxaJurosAnual}% a.a.</td>
+                <td>${formatCurrency(contrato.valorPrincipal)}</td>
+                <td>${formatCurrency(totalJurosOriginal)}</td>
+                <td><strong>${formatCurrency(totalPagoOriginal)}</strong></td>
+                <td>—</td>
+              </tr>
+              ${resultadosCenarios.map(cen => `
+                <tr>
+                  <td><strong>${cen.nome}</strong></td>
+                  <td>${cen.indexador}</td>
+                  <td>${cen.taxaJurosAnual}% a.a.</td>
+                  <td>${formatCurrency(cen.totalAmortizado)}</td>
+                  <td>${formatCurrency(cen.totalJuros)}</td>
+                  <td><strong>${formatCurrency(cen.totalPago)}</strong></td>
+                  <td style="color: #059669; font-weight: 700;">${cen.economiaRelativa > 0 ? formatCurrency(cen.economiaRelativa) : "R$ 0,00"}</td>
+                </tr>
+              `).join("")}
+            </tbody>
+          </table>
 
-      if (!res.ok) throw new Error("Falha ao enviar arquivo para o Google Drive");
-      
-      showToast("Relatório exportado para o Google Drive com sucesso!", "success");
-    } catch (err: any) {
-      console.error(err);
-      showToast("Erro ao exportar para o Drive: " + err.message, "error");
-    } finally {
-      setExportingDrive(false);
-    }
+          <div class="section-title">2. Cronograma Detalhado de Parcelas e Fluxo de Caixa</div>
+          <table>
+            <thead>
+              <tr>
+                <th>#</th>
+                <th>Vencimento</th>
+                <th>% Amort.</th>
+                <th>Amortização Principal</th>
+                <th>Correção Monetária</th>
+                <th>Juros / Encargos</th>
+                <th>Valor Total Parcela</th>
+                <th>Saldo Devedor Residual</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${cronogramaComStatus.map((p, i) => `
+                <tr>
+                  <td>${i + 1}</td>
+                  <td>${formatDate(p.data)}</td>
+                  <td>${p.percentualAmortizacao}%</td>
+                  <td>${formatCurrency(p.principal)}</td>
+                  <td>${formatCurrency(p.correcao)}</td>
+                  <td>${formatCurrency(p.juros)}</td>
+                  <td><strong>${formatCurrency(p.valorCalculado)}</strong></td>
+                  <td>${formatCurrency(p.saldoDevedor)}</td>
+                </tr>
+              `).join("")}
+            </tbody>
+          </table>
+
+          ${laudo ? `
+            <div class="section-title">3. Parecer Técnico & Laudo de Irregularidades Detectadas</div>
+            <div class="summary-box">
+              <div style="font-weight: 700; font-size: 12px; margin-bottom: 4px;">Parecer da Auditoria:</div>
+              <div>${laudo.resumo || "Sem irregularidades impeditivas identificadas."}</div>
+              ${laudo.pontosDeAtencao && laudo.pontosDeAtencao.length > 0 ? `
+                <div style="margin-top: 8px; font-weight: 700;">Pontos de Atenção:</div>
+                <ul style="margin-top: 4px; padding-left: 16px;">
+                  ${laudo.pontosDeAtencao.map((ponto: string) => `<li>${ponto}</li>`).join("")}
+                </ul>
+              ` : ""}
+              ${laudo.divergencias && laudo.divergencias.length > 0 ? `
+                <div style="margin-top: 8px; font-weight: 700;">Divergências Identificadas nos Documentos do Banco:</div>
+                <ul style="margin-top: 4px; padding-left: 16px;">
+                  ${laudo.divergencias.map((d: any) => `<li><strong>${d.campo || "Divergência"}:</strong> ${d.detalhe || d.valorDocumento}</li>`).join("")}
+                </ul>
+              ` : ""}
+            </div>
+          ` : ""}
+
+          <div class="signatures">
+            <div class="sig-line">
+              <strong>${user?.displayName || "Analista / Perito Responsável"}</strong><br/>
+              Perícia de Crédito Rural
+            </div>
+            <div class="sig-line">
+              <strong>${contrato.emitente || "Produtor Rural"}</strong><br/>
+              Devedor / Emitente
+            </div>
+          </div>
+
+          <div class="footer">
+            Relatório gerado automaticamente via AgroCredit Simulador Pro • Módulo de Cálculo Auditável.
+          </div>
+
+          <script>
+            window.onload = function() {
+              window.print();
+            }
+          </script>
+        </body>
+      </html>
+    `;
+
+    printWindow.document.open();
+    printWindow.document.write(htmlContent);
+    printWindow.document.close();
+    showToast("Relatório PDF preparado para impressão/download com sucesso!", "success");
   };
 
   // Get data for chart comparing total values
@@ -1739,6 +2153,62 @@ export default function App() {
             Conexão Oficial Banco Central
           </div>
         </div>
+
+        {/* GOOGLE ACCOUNT PROFILE IN SIDEBAR */}
+        <div className={`mt-auto border-t border-slate-800 pt-4 px-1 ${!isSidebarOpen && 'hidden'}`}>
+          {user ? (
+            <div className="flex items-center gap-2.5 p-2.5 bg-slate-900 rounded-xl border border-slate-800 shadow-sm">
+              {user.photoURL ? (
+                <img src={user.photoURL} alt={user.displayName || "Usuário"} className="w-8 h-8 rounded-full border border-emerald-500/30 object-cover shrink-0" />
+              ) : (
+                <div className="w-8 h-8 rounded-full bg-emerald-600 text-white font-bold text-xs flex items-center justify-center shrink-0">
+                  {(user.displayName || user.email || (user.isAnonymous ? "A" : "G")).charAt(0).toUpperCase()}
+                </div>
+              )}
+              <div className="flex-1 min-w-0">
+                <div className="flex items-center gap-1">
+                  <p className="text-xs font-bold text-slate-200 truncate">{user.displayName || (user.isAnonymous ? "Analista (Modo Rápido)" : "Usuário Google")}</p>
+                </div>
+                <p className="text-[10px] text-slate-400 truncate">{user.email || "Sessão Firebase Ativa"}</p>
+              </div>
+              <button
+                onClick={handleGoogleLogout}
+                title="Sair da sessão Firebase"
+                className="text-slate-400 hover:text-red-400 p-1.5 transition rounded-lg hover:bg-slate-800 cursor-pointer shrink-0"
+              >
+                <LogOut className="w-4 h-4" />
+              </button>
+            </div>
+          ) : (
+            <div className="p-3 bg-slate-900/90 rounded-xl border border-slate-800 space-y-2">
+              <div className="flex items-center justify-between text-xs font-bold text-slate-200">
+                <div className="flex items-center gap-2">
+                  <GoogleIcon className="w-4 h-4" />
+                  <span>Autenticação Google</span>
+                </div>
+              </div>
+              <p className="text-[10px] text-slate-400 leading-tight">
+                Conecte-se para salvar simulações no banco de dados e exportar laudos.
+              </p>
+              <div className="space-y-1.5 pt-1">
+                <button
+                  onClick={handleGoogleLogin}
+                  className="w-full py-2 bg-white hover:bg-slate-100 text-slate-800 font-bold text-xs rounded-lg transition flex items-center justify-center gap-2 shadow-sm cursor-pointer"
+                >
+                  <GoogleIcon className="w-3.5 h-3.5" />
+                  <span>Entrar com Google</span>
+                </button>
+                <button
+                  onClick={openAuthModal}
+                  className="w-full py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold text-[11px] rounded-lg transition flex items-center justify-center gap-1.5 cursor-pointer"
+                >
+                  <ShieldCheck className="w-3.5 h-3.5 text-emerald-400" />
+                  <span>Outras Opções</span>
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
       </aside>
 
       {/* WORKSPACE AREA */}
@@ -1753,54 +2223,94 @@ export default function App() {
           
           <div className="flex items-center gap-3">
             {!user ? (
-              <button
-                onClick={loginWithGoogle}
-                className="px-4 py-2 bg-white border border-slate-200 rounded-lg text-xs font-bold text-slate-700 hover:bg-slate-50 shadow-sm transition flex items-center gap-2 cursor-pointer"
-              >
-                <LogIn className="w-4 h-4 text-emerald-600" />
-                Fazer Login
-              </button>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={handleGoogleLogin}
+                  className="px-4 py-2 bg-white border border-slate-300 hover:bg-slate-50 text-slate-800 rounded-xl text-xs font-bold shadow-xs transition flex items-center gap-2 cursor-pointer"
+                >
+                  <GoogleIcon className="w-4 h-4" />
+                  <span>Entrar com Google</span>
+                </button>
+                <button
+                  onClick={openAuthModal}
+                  className="px-3 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-bold transition flex items-center gap-1.5 cursor-pointer"
+                  title="Mais opções de login"
+                >
+                  <ShieldCheck className="w-4 h-4 text-emerald-600" />
+                  <span>Opções</span>
+                </button>
+              </div>
             ) : (
               <>
+                <div className="flex items-center gap-2.5 bg-slate-50 px-3 py-1.5 rounded-xl border border-slate-200">
+                  {user.photoURL ? (
+                    <img src={user.photoURL} alt={user.displayName || "Usuário"} className="w-7 h-7 rounded-full border border-emerald-500/30 object-cover" />
+                  ) : (
+                    <div className="w-7 h-7 rounded-full bg-emerald-600 text-white font-bold text-xs flex items-center justify-center">
+                      {(user.displayName || user.email || (user.isAnonymous ? "A" : "G")).charAt(0).toUpperCase()}
+                    </div>
+                  )}
+                  <div className="text-left hidden sm:block">
+                    <div className="flex items-center gap-1.5">
+                      <p className="text-xs font-bold text-slate-800 leading-none">{user.displayName || (user.isAnonymous ? "Analista (Modo Rápido)" : "Usuário")}</p>
+                      <span className="inline-flex items-center gap-0.5 text-[9px] bg-emerald-50 text-emerald-700 font-bold px-1.5 py-0.2 rounded border border-emerald-200">
+                        Firebase
+                      </span>
+                    </div>
+                    <p className="text-[10px] text-slate-500 leading-tight truncate max-w-[150px]">{user.email || "Sessão Firebase Ativa"}</p>
+                  </div>
+                </div>
+
                 <button
                   onClick={handleSaveSimulation}
                   disabled={saving}
-                  className="px-4 py-2 bg-emerald-50 text-emerald-700 border border-emerald-200 rounded-lg text-xs font-bold hover:bg-emerald-100 shadow-sm transition flex items-center gap-2 cursor-pointer"
+                  className="px-4 py-2 bg-emerald-50 text-emerald-700 border border-emerald-200 rounded-xl text-xs font-bold hover:bg-emerald-100 shadow-xs transition flex items-center gap-2 cursor-pointer"
                 >
                   <Save className={`w-4 h-4 ${saving ? "animate-spin" : "text-emerald-600"}`} />
                   {saving ? "Salvando..." : "Salvar Simulação"}
                 </button>
                 <button
-                  onClick={logout}
-                  className="px-4 py-2 bg-white border border-slate-200 rounded-lg text-xs font-bold text-slate-700 hover:bg-slate-50 shadow-sm transition flex items-center gap-2 cursor-pointer"
+                  onClick={handleGoogleLogout}
+                  title="Sair da conta"
+                  className="px-3 py-2 bg-white border border-slate-200 rounded-xl text-xs font-bold text-slate-600 hover:bg-red-50 hover:text-red-600 hover:border-red-200 shadow-xs transition flex items-center gap-1.5 cursor-pointer"
                 >
-                  <LogOut className="w-4 h-4 text-slate-500" />
-                  Sair
+                  <LogOut className="w-3.5 h-3.5" />
+                  <span className="hidden md:inline">Sair</span>
                 </button>
               </>
             )}
             
             <button
-              onClick={handleExportToDrive}
-              disabled={exportingDrive}
-              className="px-4 py-2 bg-white border border-slate-200 rounded-lg text-xs font-bold text-slate-700 hover:bg-slate-50 shadow-sm transition flex items-center gap-2 cursor-pointer"
+              onClick={() => setSimuladorModalOpen(true)}
+              className="px-3.5 py-2 bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-700 hover:to-teal-700 text-white rounded-xl text-xs font-bold shadow-xs transition flex items-center gap-1.5 cursor-pointer"
+              title="Abrir Simulador de Negociação e Repactuação"
             >
-              <Cloud className={`w-4 h-4 ${exportingDrive ? "animate-pulse" : "text-emerald-500"}`} />
-              {exportingDrive ? "Enviando..." : "Drive"}
+              <Sparkles className="w-4 h-4 text-amber-300 animate-pulse" />
+              <span>Simulador</span>
+            </button>
+            <button
+              onClick={() => openMemoriaCalculo()}
+              className="px-3.5 py-2 bg-emerald-700 text-white rounded-xl text-xs font-bold hover:bg-emerald-800 shadow-xs transition flex items-center gap-1.5 cursor-pointer"
+              title="Abrir Memória de Cálculo Auditável"
+            >
+              <Calculator className="w-4 h-4 text-emerald-300" />
+              <span>Memória de Cálculo</span>
             </button>
             <button
               onClick={triggerCSVExport}
-              className="px-4 py-2 bg-white border border-slate-200 rounded-lg text-xs font-bold text-slate-700 hover:bg-slate-50 shadow-sm transition flex items-center gap-2 cursor-pointer"
+              className="px-3.5 py-2 bg-white border border-slate-200 rounded-xl text-xs font-bold text-slate-700 hover:bg-slate-50 shadow-xs transition flex items-center gap-1.5 cursor-pointer"
+              title="Exportar dados para planilha Excel (.csv)"
             >
               <FileSpreadsheet className="w-4 h-4 text-emerald-600" />
-              Exportar XLS
+              <span>Exportar XLS</span>
             </button>
             <button
               onClick={triggerPDFExport}
-              className="px-4 py-2 bg-slate-900 text-white rounded-lg text-xs font-bold hover:bg-slate-800 shadow-md transition flex items-center gap-2 cursor-pointer"
+              className="px-3.5 py-2 bg-slate-900 text-white rounded-xl text-xs font-bold hover:bg-slate-800 shadow-md transition flex items-center gap-1.5 cursor-pointer"
+              title="Gerar Relatório Técnico Completo em PDF"
             >
               <Download className="w-4 h-4 text-emerald-400" />
-              Gerar Relatório (PDF)
+              <span>Gerar Relatório (PDF)</span>
             </button>
           </div>
         </header>
@@ -2055,11 +2565,42 @@ export default function App() {
                 </div>
 
                 {!user ? (
-                  <div className="p-6 bg-slate-50 rounded-xl text-center space-y-4">
-                    <p className="text-slate-600">Você precisa fazer login para visualizar seus contratos salvos.</p>
-                    <button onClick={loginWithGoogle} className="px-5 py-2.5 bg-emerald-600 text-white rounded-lg font-bold hover:bg-emerald-700 transition cursor-pointer shadow-sm">Fazer Login com Google</button>
-                    <div className="mt-4 p-3 bg-amber-50 border border-amber-200 rounded-lg text-xs text-amber-800 max-w-md mx-auto">
-                      <strong>Dica de Navegador:</strong> Como o simulador roda dentro de um ambiente de visualização (iframe), o pop-up de login do Google pode ser bloqueado. Se não conseguir logar, clique no ícone de <strong>"Abrir em nova aba"</strong> no topo direito da tela para logar e salvar normalmente!
+                  <div className="p-8 bg-slate-50 rounded-2xl border border-slate-200 text-center space-y-4 max-w-xl mx-auto my-6">
+                    <div className="w-12 h-12 bg-white rounded-2xl border border-slate-200 flex items-center justify-center mx-auto shadow-xs">
+                      <ShieldCheck className="w-6 h-6 text-emerald-600" />
+                    </div>
+                    <div>
+                      <h4 className="text-base font-bold text-slate-800">Autenticação com Google Requerida</h4>
+                      <p className="text-xs text-slate-500 mt-1">
+                        Conecte sua conta Google para visualizar, versionar e salvar contratos e simulações no banco de dados seguro do Firebase Firestore.
+                      </p>
+                    </div>
+                    
+                    <div className="flex flex-col sm:flex-row items-center justify-center gap-3 pt-2">
+                      <button
+                        onClick={handleGoogleLogin}
+                        className="w-full sm:w-auto px-6 py-2.5 bg-white border border-slate-300 text-slate-800 rounded-xl font-bold text-xs hover:bg-slate-100 shadow-xs transition cursor-pointer flex items-center justify-center gap-2"
+                      >
+                        <GoogleIcon className="w-4 h-4" />
+                        <span>Entrar com Google</span>
+                      </button>
+                      <button
+                        onClick={openAuthModal}
+                        className="w-full sm:w-auto px-5 py-2.5 bg-emerald-700 hover:bg-emerald-800 text-white rounded-xl font-bold text-xs shadow-xs transition cursor-pointer flex items-center justify-center gap-2"
+                      >
+                        <ShieldCheck className="w-4 h-4 text-emerald-200" />
+                        <span>Mais Opções de Login</span>
+                      </button>
+                    </div>
+
+                    <div className="mt-4 p-3.5 bg-amber-50/90 border border-amber-200 rounded-xl text-xs text-amber-900 text-left space-y-1">
+                      <div className="font-bold flex items-center gap-1.5 text-amber-800">
+                        <AlertCircle className="w-4 h-4 text-amber-600 shrink-0" />
+                        <span>Informação de Conectividade em Preview / Cloud Run:</span>
+                      </div>
+                      <p className="text-[11px] text-amber-800/90 leading-relaxed">
+                        O login direto do Google OAuth exige autorização de domínio em contêineres e bloqueia pop-ups dentro de iframes. Se o botão Google não abrir, o <strong>Modo Analista (1-Clique)</strong> ativa uma sessão real do Firebase Auth instantaneamente sem bloqueios. Caso prefira o Google OAuth, utilize a opção <strong>"Abrir em nova aba"</strong> no topo da tela.
+                      </p>
                     </div>
                   </div>
                 ) : (
@@ -2148,10 +2689,12 @@ export default function App() {
                                 
                                 const isDocsExpanded = expandedDocsSimId === sim.id;
                                 const isHistoryExpanded = expandedDocsSimId === `${sim.id}_history`;
+                                const isLogsExpanded = expandedDocsSimId === `${sim.id}_logs`;
                                 const hasHistory = sim.history && sim.history.length > 0;
+                                const hasLogs = sim.auditLogs && sim.auditLogs.length > 0;
 
                                 return (
-                                  <div key={sim.id} className={`p-5 border rounded-xl hover:border-emerald-300 transition-all flex flex-col gap-3 bg-white ${(isDocsExpanded || isHistoryExpanded) ? 'border-emerald-400 shadow-md col-span-1 md:col-span-2' : 'border-slate-200 shadow-sm'}`}>
+                                  <div key={sim.id} className={`p-5 border rounded-xl hover:border-emerald-300 transition-all flex flex-col gap-3 bg-white ${(isDocsExpanded || isHistoryExpanded || isLogsExpanded) ? 'border-emerald-400 shadow-md col-span-1 md:col-span-2' : 'border-slate-200 shadow-sm'}`}>
                                     <div className="flex justify-between items-start gap-2">
                                       <div className="space-y-1">
                                         <div className="flex items-center gap-2">
@@ -2172,6 +2715,20 @@ export default function App() {
                                 <div><strong>Credor:</strong> <span className="text-slate-800 font-medium">{cData?.credor || "Não informado"}</span></div>
                                 <div><strong>Principal:</strong> <span className="text-slate-800 font-medium">{formatCurrency(cData?.valorPrincipal || 0)}</span></div>
                                 <div><strong>Taxa Original:</strong> <span className="text-slate-800 font-medium">{formatPercentage(cData?.taxaJurosAnual || 0)} + {cData?.indexadorOriginal}</span></div>
+                              </div>
+
+                              {/* OPERATOR IDENTIFICATION BADGE */}
+                              <div className="flex flex-wrap items-center gap-3 text-[11px] text-slate-500 bg-emerald-50/50 p-2 rounded-lg border border-emerald-100/60">
+                                <div className="flex items-center gap-1.5">
+                                  <UserCheck className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+                                  <span>Cadastrado por: <strong className="text-slate-800 font-bold">{sim.createdByName || sim.createdByEmail || "Analista"}</strong></span>
+                                </div>
+                                {sim.updatedByName && (
+                                  <div className="flex items-center gap-1 border-l border-emerald-200/80 pl-3">
+                                    <Clock className="w-3.5 h-3.5 text-slate-400 shrink-0" />
+                                    <span>Última alteração: <strong className="text-slate-700 font-semibold">{sim.updatedByName}</strong> ({new Date(sim.updatedAt).toLocaleDateString("pt-BR")})</span>
+                                  </div>
+                                )}
                               </div>
 
                               {/* ACTIONS ROW */}
@@ -2208,6 +2765,14 @@ export default function App() {
                                 >
                                   <History className="w-3.5 h-3.5" />
                                   Histórico ({hasHistory ? sim.history.length : 0})
+                                </button>
+
+                                <button
+                                  onClick={() => setExpandedDocsSimId(isLogsExpanded ? null : `${sim.id}_logs`)}
+                                  className={`px-3 py-1.5 rounded-lg font-bold text-xs transition flex items-center gap-1 cursor-pointer border ${isLogsExpanded ? 'bg-slate-800 text-white border-slate-800' : 'bg-slate-50 hover:bg-slate-100 text-slate-700 border-slate-200'}`}
+                                >
+                                  <ShieldCheck className="w-3.5 h-3.5 text-emerald-600" />
+                                  Logs ({hasLogs ? sim.auditLogs.length : 0})
                                 </button>
 
                                 <button
@@ -2485,6 +3050,45 @@ export default function App() {
                                       ))
                                     ) : (
                                       <p className="text-slate-400 text-xs italic pl-2 pt-1">Nenhum histórico de versão anterior registrado para este contrato.</p>
+                                    )}
+                                  </div>
+                                </motion.div>
+                              )}
+
+                              {/* AUDIT LOGS EXPANDED PANEL */}
+                              {isLogsExpanded && (
+                                <motion.div
+                                  initial={{ opacity: 0, height: 0 }}
+                                  animate={{ opacity: 1, height: "auto" }}
+                                  className="pt-3 border-t border-slate-100 space-y-3"
+                                >
+                                  <h4 className="font-bold text-slate-800 text-xs uppercase tracking-wider flex items-center gap-1">
+                                    <ShieldCheck className="w-3.5 h-3.5 text-emerald-600" />
+                                    Logs de Alteração & Rastreabilidade do Operador
+                                  </h4>
+
+                                  <div className="relative border-l-2 border-emerald-300 pl-4 ml-2 py-1 space-y-3">
+                                    {hasLogs ? (
+                                      sim.auditLogs.map((log: AuditLogEntry, index: number) => (
+                                        <div key={log.id || index} className="relative text-xs">
+                                          <div className="absolute -left-[21px] top-1 w-2.5 h-2.5 rounded-full bg-emerald-600 ring-4 ring-emerald-50"></div>
+                                          <div className="bg-slate-50 p-2.5 rounded-lg border border-slate-200 space-y-1">
+                                            <div className="flex justify-between items-center">
+                                              <span className="font-bold text-slate-800 text-xs">{log.action}</span>
+                                              <span className="text-[10px] font-mono text-slate-400">
+                                                {new Date(log.timestamp).toLocaleDateString("pt-BR")} às {new Date(log.timestamp).toLocaleTimeString("pt-BR")}
+                                              </span>
+                                            </div>
+                                            <p className="text-[11px] text-slate-600">{log.details}</p>
+                                            <div className="flex items-center gap-1 text-[10px] font-semibold text-emerald-800 pt-0.5">
+                                              <UserCheck className="w-3 h-3 text-emerald-600" />
+                                              <span>Operador: {log.userName} ({log.userEmail})</span>
+                                            </div>
+                                          </div>
+                                        </div>
+                                      ))
+                                    ) : (
+                                      <p className="text-slate-400 text-xs italic pl-2 pt-1">Nenhum log de alteração registrado para este contrato.</p>
                                     )}
                                   </div>
                                 </motion.div>
@@ -2840,9 +3444,18 @@ export default function App() {
                 <div className="lg:col-span-8 flex flex-col gap-6">
                   {/* CARD 1: CONTRACT PRINCIPAL DETAILS */}
                   <div className="bg-white border border-slate-200 rounded-2xl p-6 shadow-sm space-y-4">
-                    <div className="flex items-center gap-2 pb-2 border-b border-slate-100">
-                      <Settings className="w-4.5 h-4.5 text-emerald-600" />
-                      <h3 className="font-bold text-slate-800 text-sm">Dados Principais do Contrato Original</h3>
+                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-2 border-b border-slate-100">
+                      <div className="flex items-center gap-2">
+                        <Settings className="w-4.5 h-4.5 text-emerald-600" />
+                        <h3 className="font-bold text-slate-800 text-sm">Dados Principais do Contrato Original</h3>
+                      </div>
+
+                      <div className="flex items-center gap-2">
+                        <span className="inline-flex items-center gap-1.5 px-3 py-1 bg-emerald-50 text-emerald-700 rounded-lg text-xs font-bold border border-emerald-200">
+                          <Check className="w-3.5 h-3.5 text-emerald-600 stroke-[3]" />
+                          <span>Contrato Ativo no Simulador</span>
+                        </span>
+                      </div>
                     </div>
 
                   <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4 text-xs">
@@ -4194,6 +4807,7 @@ export default function App() {
                               <th className="p-3 text-right">Juros Acumulados</th>
                               <th className="p-3 text-right">Custo Efetivo Total</th>
                               <th className="p-3 text-right text-emerald-600">Economia Relativa</th>
+                              <th className="p-3 text-center">Auditoria</th>
                             </tr>
                           </thead>
                           <tbody className="divide-y divide-slate-100">
@@ -4205,6 +4819,16 @@ export default function App() {
                               <td className="p-3 text-right text-slate-600">{formatCurrency(totalJurosOriginal)}</td>
                               <td className="p-3 text-right font-bold text-slate-800">{formatCurrency(totalPagoOriginal)}</td>
                               <td className="p-3 text-right text-slate-400 font-medium">-</td>
+                              <td className="p-3 text-center">
+                                <button
+                                  onClick={() => openMemoriaCalculo(undefined, "Contrato Original Vigente", contrato.indexadorOriginal, contrato.taxaJurosAnual)}
+                                  className="px-2.5 py-1 bg-slate-900 text-white rounded-lg text-[10px] font-bold hover:bg-slate-800 transition inline-flex items-center gap-1 cursor-pointer shadow-xs"
+                                  title="Ver Memória de Cálculo Auditável"
+                                >
+                                  <Calculator className="w-3 h-3 text-emerald-400" />
+                                  <span>Memória</span>
+                                </button>
+                              </td>
                             </tr>
                             {resultadosCenarios.map(cen => (
                               <tr key={cen.id} className="hover:bg-slate-50/60 transition">
@@ -4220,6 +4844,16 @@ export default function App() {
                                 <td className="p-3 text-right font-bold text-slate-800">{formatCurrency(cen.totalPago)}</td>
                                 <td className={`p-3 text-right font-bold ${cen.economiaRelativa > 0 ? "text-emerald-600" : "text-red-500"}`}>
                                   {cen.economiaRelativa > 0 ? `+ ${formatCurrency(cen.economiaRelativa)}` : formatCurrency(cen.economiaRelativa)}
+                                </td>
+                                <td className="p-3 text-center">
+                                  <button
+                                    onClick={() => openMemoriaCalculo(undefined, cen.nome, cen.indexador, cen.taxaJurosAnual)}
+                                    className="px-2.5 py-1 bg-emerald-700 text-white rounded-lg text-[10px] font-bold hover:bg-emerald-800 transition inline-flex items-center gap-1 cursor-pointer shadow-xs"
+                                    title="Ver Memória de Cálculo Auditável"
+                                  >
+                                    <Calculator className="w-3 h-3 text-emerald-300" />
+                                    <span>Memória</span>
+                                  </button>
                                 </td>
                               </tr>
                             ))}
@@ -4293,6 +4927,7 @@ export default function App() {
                               <th className="p-3 text-right">Juros Spread / Fixo</th>
                               <th className="p-3 text-right">Total Parcela</th>
                               <th className="p-3 text-right">Saldo Devedor Final</th>
+                              <th className="p-3 text-center">Auditoria</th>
                             </tr>
                           </thead>
                           <tbody className="divide-y divide-slate-100">
@@ -4307,6 +4942,24 @@ export default function App() {
                                 <td className="p-3 text-right text-slate-600">{formatCurrency(p.jurosSpread)}</td>
                                 <td className="p-3 text-right font-bold text-slate-800 bg-emerald-50/20">{formatCurrency(p.totalPago)}</td>
                                 <td className="p-3 text-right text-slate-500 font-medium">{formatCurrency(p.saldoDevedorFinal)}</td>
+                                <td className="p-3 text-center">
+                                  <button
+                                    onClick={() => {
+                                      const activeCen = cenarios.find(c => c.id === selectedFluxoCenario);
+                                      openMemoriaCalculo(
+                                        p,
+                                        activeCen?.nome || "Contrato Original",
+                                        activeCen?.indexador || contrato.indexadorOriginal,
+                                        activeCen?.taxaJurosAnual !== undefined ? activeCen.taxaJurosAnual : contrato.taxaJurosAnual
+                                      );
+                                    }}
+                                    className="px-2 py-1 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg text-[10px] font-bold transition inline-flex items-center gap-1 cursor-pointer"
+                                    title="Abrir Memória de Cálculo Auditável desta Parcela"
+                                  >
+                                    <Calculator className="w-3.5 h-3.5 text-emerald-600" />
+                                    <span>Memória</span>
+                                  </button>
+                                </td>
                               </tr>
                             ))}
                           </tbody>
@@ -4547,6 +5200,36 @@ export default function App() {
           </div>
         )}
       </AnimatePresence>
+
+      {/* Memória de Cálculo Auditável Modal */}
+      <MemoriaCalculoModal
+        isOpen={memoriaModalState.isOpen}
+        onClose={closeMemoriaCalculo}
+        contrato={contrato}
+        parcela={memoriaModalState.parcela}
+        cenarioNome={memoriaModalState.cenarioNome}
+        indexadorNome={memoriaModalState.indexadorNome}
+        taxaJurosAnual={memoriaModalState.taxaJurosAnual}
+        valorIndexadorAnual={memoriaModalState.valorIndexadorAnual}
+        indexadorRates={indexadores}
+        associatedDocuments={savedSimulations.find(s => s.id === loadedSimulationId)?.associatedDocuments || []}
+      />
+
+      {/* Simulador de Negociação e Repactuação Modal */}
+      <SimuladorNegociacaoModal
+        isOpen={simuladorModalOpen}
+        onClose={() => setSimuladorModalOpen(false)}
+        contrato={contrato}
+        indexadorRates={indexadores}
+        onSaveProposal={handleSaveProposalToFirestore}
+      />
+
+      {/* Auth Modal with Email, 1-Click Analista & Google OAuth options */}
+      <AuthModal
+        isOpen={isAuthModalOpen}
+        onClose={() => setIsAuthModalOpen(false)}
+        onSuccess={(msg) => showToast(msg, "success")}
+      />
     </div>
   );
 }

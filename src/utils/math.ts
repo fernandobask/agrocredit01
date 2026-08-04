@@ -1,15 +1,32 @@
-import { Contrato, Indexador, ProjecaoParcela, IndexadorRates, ResultadoCenario } from "../types";
+import { Contrato, Indexador, ProjecaoParcela, ProjecaoMensal, IndexadorRates, ResultadoCenario } from "../types";
+
+// Parses any date string safely (handles ISO strings, YYYY-MM-DD, and missing values)
+export function parseDateSafely(dateStr?: string): Date {
+  if (!dateStr) return new Date();
+  const cleanStr = String(dateStr).split("T")[0];
+  const parts = cleanStr.split("-");
+  if (parts.length === 3) {
+    const y = parseInt(parts[0], 10);
+    const m = parseInt(parts[1], 10) - 1;
+    const d = parseInt(parts[2], 10);
+    const dateObj = new Date(y, m, d);
+    if (!isNaN(dateObj.getTime())) return dateObj;
+  }
+  const fallback = new Date(dateStr);
+  return isNaN(fallback.getTime()) ? new Date() : fallback;
+}
 
 // Calculates the number of days between two date strings (YYYY-MM-DD)
 export function getDaysBetween(date1: string, date2: string): number {
-  const d1 = new Date(date1 + "T00:00:00");
-  const d2 = new Date(date2 + "T00:00:00");
+  const d1 = parseDateSafely(date1);
+  const d2 = parseDateSafely(date2);
   const diffTime = d2.getTime() - d1.getTime();
   return Math.max(0, Math.ceil(diffTime / (1000 * 60 * 60 * 24)));
 }
 
 // Format currency to Brazilian Real (R$)
 export function formatCurrency(value: number): string {
+  if (isNaN(value) || value === undefined || value === null) return "R$ 0,00";
   return new Intl.NumberFormat("pt-BR", {
     style: "currency",
     currency: "BRL",
@@ -18,6 +35,7 @@ export function formatCurrency(value: number): string {
 
 // Format percentage
 export function formatPercentage(value: number): string {
+  if (isNaN(value) || value === undefined || value === null) return "0,00%";
   return new Intl.NumberFormat("pt-BR", {
     style: "percent",
     minimumFractionDigits: 2,
@@ -26,13 +44,157 @@ export function formatPercentage(value: number): string {
 }
 
 // Format date to Brazilian standard DD/MM/YYYY
-export function formatDate(dateStr: string): string {
+export function formatDate(dateStr?: string): string {
   if (!dateStr) return "";
-  const parts = dateStr.split("-");
+  const cleanStr = String(dateStr).split("T")[0];
+  const parts = cleanStr.split("-");
   if (parts.length === 3) {
     return `${parts[2]}/${parts[1]}/${parts[0]}`;
   }
-  return dateStr;
+  return cleanStr;
+}
+
+// Computes month-by-month financial projection (grade mensal estilo Excel)
+export function calcularProjecaoMensal(
+  contrato: Contrato,
+  indexadorAlvo: Indexador,
+  novaTaxaJurosAnual: number,
+  indexadorRates: IndexadorRates
+): ProjecaoMensal[] {
+  const { valorPrincipal, dataEmissao, dataVencimento, cronogramaParcelas } = contrato;
+  if (!valorPrincipal || valorPrincipal <= 0) return [];
+
+  const dtInicio = parseDateSafely(dataEmissao || new Date().toISOString().split("T")[0]);
+  
+  // Find last date from installments or contract maturity
+  let dtFim = parseDateSafely(dataVencimento || dataEmissao);
+  if (cronogramaParcelas && cronogramaParcelas.length > 0) {
+    cronogramaParcelas.forEach(p => {
+      const pDate = parseDateSafely(p.data);
+      if (pDate.getTime() > dtFim.getTime()) {
+        dtFim = pDate;
+      }
+    });
+  }
+
+  // Ensure dtFim is strictly after dtInicio
+  if (dtFim.getTime() <= dtInicio.getTime()) {
+    dtFim = new Date(dtInicio.getFullYear() + 1, dtInicio.getMonth(), dtInicio.getDate());
+  }
+
+  // Calculate total projection by installments first to know exact amortization per installment
+  const parcelasProjetadas = calcularProjecao(contrato, indexadorAlvo, novaTaxaJurosAnual, indexadorRates);
+
+  const mensalGrid: ProjecaoMensal[] = [];
+  let saldoDevedor = valorPrincipal;
+  let currDate = new Date(dtInicio.getTime());
+  let mesIndex = 1;
+
+  const taxaIndexadorAnual = ((indexadorRates && indexadorRates[indexadorAlvo]) || 0) / 100;
+  const taxaSpreadAnual = (novaTaxaJurosAnual || 0) / 100;
+  const taxaCombinadaAnual = (1 + taxaSpreadAnual) * (1 + taxaIndexadorAnual) - 1;
+
+  let maxLoop = 360; // 30 years max safety cap
+  while ((currDate.getTime() < dtFim.getTime() || mesIndex === 1) && maxLoop > 0) {
+    maxLoop--;
+    const dataInicioStr = currDate.toISOString().split("T")[0];
+    
+    // Move 1 month ahead
+    const nextDate = new Date(currDate.getFullYear(), currDate.getMonth() + 1, currDate.getDate());
+    // Cap at dtFim if next month exceeds final maturity
+    const actualNextDate = nextDate.getTime() > dtFim.getTime() ? new Date(dtFim.getTime()) : nextDate;
+    const dataFimStr = actualNextDate.toISOString().split("T")[0];
+
+    const diasNoMes = Math.max(1, getDaysBetween(dataInicioStr, dataFimStr));
+    const fractionOfYear = diasNoMes / 365;
+
+    // Monthly interest calculation
+    const jurosTotalMes = saldoDevedor * (Math.pow(1 + taxaCombinadaAnual, fractionOfYear) - 1);
+    const jurosSpreadMes = saldoDevedor * (Math.pow(1 + taxaSpreadAnual, fractionOfYear) - 1);
+    const jurosIndexadorMes = Math.max(0, jurosTotalMes - jurosSpreadMes);
+
+    // Check if any installment falls within this month window
+    let amortizacaoMes = 0;
+    let isMesParcela = false;
+    let numeroParcela: number | undefined = undefined;
+
+    parcelasProjetadas.forEach(p => {
+      const pTime = parseDateSafely(p.data).getTime();
+      const startTime = parseDateSafely(dataInicioStr).getTime();
+      const endTime = parseDateSafely(dataFimStr).getTime();
+
+      if (pTime >= startTime && pTime <= endTime) {
+        amortizacaoMes += p.amortizacao;
+        isMesParcela = true;
+        numeroParcela = p.numero;
+      }
+    });
+
+    // Cap amortization at outstanding balance
+    if (amortizacaoMes > saldoDevedor) {
+      amortizacaoMes = saldoDevedor;
+    }
+
+    // On final month step or when balance is almost paid
+    if (actualNextDate.getTime() >= dtFim.getTime()) {
+      if (saldoDevedor > 0 && isMesParcela) {
+        amortizacaoMes = saldoDevedor;
+      }
+    }
+
+    const totalFluxoMes = amortizacaoMes + jurosTotalMes;
+    const saldoDevedorFinal = Math.max(0, saldoDevedor - amortizacaoMes);
+
+    const mesStr = String(currDate.getMonth() + 1).padStart(2, "0");
+    const anoStr = currDate.getFullYear();
+
+    mensalGrid.push({
+      mesIndex,
+      anoMesStr: `${mesStr}/${anoStr}`,
+      dataInicio: dataInicioStr,
+      dataFim: dataFimStr,
+      diasNoMes,
+      saldoDevedorInicial: saldoDevedor,
+      jurosSpreadMes,
+      jurosIndexadorMes,
+      jurosTotalMes,
+      amortizacaoMes,
+      totalFluxoMes,
+      saldoDevedorFinal,
+      isMesParcela,
+      numeroParcela
+    });
+
+    saldoDevedor = saldoDevedorFinal;
+    if (actualNextDate.getTime() >= dtFim.getTime() || saldoDevedor <= 0) {
+      break;
+    }
+    currDate = actualNextDate;
+    mesIndex++;
+  }
+
+  return mensalGrid;
+}
+
+// Export monthly breakdown to CSV (Excel compatible)
+export function exportMensalToCSV(mensalGrid: ProjecaoMensal[], contrato: Contrato, indexadorNome: string): string {
+  let csv = "\uFEFF"; // UTF-8 BOM
+
+  csv += `MEMÓRIA DE CÁLCULO MENSAL DETALHADA - VISÃO EXCEL ESPECIALISTA\n`;
+  csv += `Contrato Nº;${contrato.numero}\n`;
+  csv += `Emitente / Devedor;${contrato.emitente}\n`;
+  csv += `Credor / Instituição;${contrato.credor}\n`;
+  csv += `Valor Principal;${contrato.valorPrincipal.toFixed(2)}\n`;
+  csv += `Indexador;${indexadorNome}\n\n`;
+
+  csv += `Mês nº;Período Ref.;Início Período;Fim Período;Dias;Saldo Devedor Inicial (R$);Juros Taxa Fixa (R$);Juros Indexador (R$);Juros Total Mês (R$);Amortização Principal (R$);Fluxo Total Mês (R$);Saldo Devedor Final (R$);Evento / Parcela\n`;
+
+  mensalGrid.forEach(m => {
+    const eventoStr = m.isMesParcela ? `Vencimento Parcela #${m.numeroParcela || ''}` : "Acumulação Mensal";
+    csv += `${m.mesIndex};${m.anoMesStr};${formatDate(m.dataInicio)};${formatDate(m.dataFim)};${m.diasNoMes};${m.saldoDevedorInicial.toFixed(2)};${m.jurosSpreadMes.toFixed(2)};${m.jurosIndexadorMes.toFixed(2)};${m.jurosTotalMes.toFixed(2)};${m.amortizacaoMes.toFixed(2)};${m.totalFluxoMes.toFixed(2)};${m.saldoDevedorFinal.toFixed(2)};${eventoStr}\n`;
+  });
+
+  return csv;
 }
 
 // Computes the Cash Flow projection for a contract and an indexer scenario
@@ -50,7 +212,7 @@ export function calcularProjecao(
 
   // Sort installments by date
   const sortedParcelas = [...cronogramaParcelas].sort((a, b) => 
-    new Date(a.data + "T00:00:00").getTime() - new Date(b.data + "T00:00:00").getTime()
+    parseDateSafely(a.data).getTime() - parseDateSafely(b.data).getTime()
   );
 
   const projecoes: ProjecaoParcela[] = [];
@@ -58,8 +220,8 @@ export function calcularProjecao(
   let dataReferenciaAnterior = dataEmissao;
 
   // Rate of the target indexer
-  const taxaIndexadorAnual = indexadorRates[indexadorAlvo] / 100; // e.g. 10.65% -> 0.1065
-  const taxaSpreadAnual = novaTaxaJurosAnual / 100; // e.g. 3.7% -> 0.037
+  const taxaIndexadorAnual = ((indexadorRates && indexadorRates[indexadorAlvo]) || 0) / 100;
+  const taxaSpreadAnual = (novaTaxaJurosAnual || 0) / 100;
 
   // Combined interest rate (B3 compounding convention)
   // (1 + spread) * (1 + indexer) - 1

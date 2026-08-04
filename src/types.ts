@@ -1,3 +1,30 @@
+export interface ProjecaoMensal {
+  mesIndex: number;
+  anoMesStr: string; // e.g. "05/2024"
+  dataInicio: string; // YYYY-MM-DD
+  dataFim: string; // YYYY-MM-DD
+  diasNoMes: number;
+  saldoDevedorInicial: number;
+  jurosSpreadMes: number;
+  jurosIndexadorMes: number;
+  jurosTotalMes: number;
+  amortizacaoMes: number;
+  totalFluxoMes: number;
+  saldoDevedorFinal: number;
+  isMesParcela: boolean;
+  numeroParcela?: number;
+}
+
+export interface AuditLogEntry {
+  id: string;
+  timestamp: string; // ISO string
+  userId: string;
+  userName: string;
+  userEmail: string;
+  action: string;
+  details?: string;
+}
+
 export enum Indexador {
   CDI = "CDI",
   SELIC = "SELIC",

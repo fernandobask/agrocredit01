@@ -1,5 +1,16 @@
 import { initializeApp } from 'firebase/app';
-import { getAuth, signInWithPopup, GoogleAuthProvider, signOut } from 'firebase/auth';
+import { 
+  getAuth, 
+  signInWithPopup, 
+  signInWithRedirect, 
+  getRedirectResult, 
+  GoogleAuthProvider, 
+  signOut, 
+  signInAnonymously,
+  signInWithEmailAndPassword,
+  createUserWithEmailAndPassword,
+  updateProfile
+} from 'firebase/auth';
 import { getFirestore } from 'firebase/firestore';
 import firebaseConfig from '../firebase-applet-config.json';
 
@@ -11,13 +22,74 @@ googleProvider.addScope('https://www.googleapis.com/auth/drive.file');
 
 let cachedAccessToken: string | null = null;
 
-export const loginWithGoogle = async () => {
-  const result = await signInWithPopup(auth, googleProvider);
-  const credential = GoogleAuthProvider.credentialFromResult(result);
-  if (credential?.accessToken) {
-    cachedAccessToken = credential.accessToken;
+export const loginAnonymously = async () => {
+  return await signInAnonymously(auth);
+};
+
+export const loginAnonymouslyWithName = async (name: string = "Analista Financeiro") => {
+  const userCredential = await signInAnonymously(auth);
+  if (userCredential.user) {
+    try {
+      await updateProfile(userCredential.user, { displayName: name });
+    } catch (e) {
+      console.warn("Não foi possível atualizar o nome do perfil anônimo:", e);
+    }
   }
-  return result;
+  return userCredential;
+};
+
+export const loginWithEmail = async (email: string, pass: string) => {
+  try {
+    return await signInWithEmailAndPassword(auth, email, pass);
+  } catch (err: any) {
+    if (err.code === 'auth/user-not-found' || err.code === 'auth/invalid-credential') {
+      // Auto register if user doesn't exist
+      const newCred = await createUserWithEmailAndPassword(auth, email, pass);
+      const nameFromEmail = email.split('@')[0];
+      const formattedName = nameFromEmail.charAt(0).toUpperCase() + nameFromEmail.slice(1);
+      await updateProfile(newCred.user, { displayName: formattedName });
+      return newCred;
+    }
+    throw err;
+  }
+};
+
+export const registerWithEmail = async (email: string, pass: string, name: string) => {
+  const userCredential = await createUserWithEmailAndPassword(auth, email, pass);
+  if (userCredential.user && name) {
+    await updateProfile(userCredential.user, { displayName: name });
+  }
+  return userCredential;
+};
+
+export const loginWithGoogle = async () => {
+  try {
+    const result = await signInWithPopup(auth, googleProvider);
+    const credential = GoogleAuthProvider.credentialFromResult(result);
+    if (credential?.accessToken) {
+      cachedAccessToken = credential.accessToken;
+    }
+    return result;
+  } catch (error: any) {
+    console.warn("Erro no login Google Popup:", error);
+    throw error;
+  }
+};
+
+export const checkRedirectLoginResult = async () => {
+  try {
+    const result = await getRedirectResult(auth);
+    if (result) {
+      const credential = GoogleAuthProvider.credentialFromResult(result);
+      if (credential?.accessToken) {
+        cachedAccessToken = credential.accessToken;
+      }
+      return result;
+    }
+  } catch (err) {
+    console.error("Erro ao checar resultado de redirecionamento:", err);
+  }
+  return null;
 };
 
 export const getAccessToken = () => cachedAccessToken;
