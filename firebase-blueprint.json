@@ -9,6 +9,7 @@
         "name": { "type": "string", "maxLength": 100 },
         "contrato": { "type": "object" },
         "cenarios": { "type": "array" },
+        "laudo": { "type": "object", "description": "Relatório de irregularidades e auditoria da IA" },
         "createdAt": { "type": "string", "format": "date-time" },
         "updatedAt": { "type": "string", "format": "date-time" }
       },

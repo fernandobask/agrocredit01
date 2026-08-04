@@ -2,6 +2,7 @@ export enum Indexador {
   CDI = "CDI",
   SELIC = "SELIC",
   IPCA = "IPCA",
+  INPC = "INPC",
   TR = "TR",
   PRE = "PRE" // Pré-fixado
 }
@@ -15,6 +16,9 @@ export interface ParcelaScheduling {
   valorJurosManual?: number; // Valor dos Juros (R$) informado manualmente
   valorCorrecaoManual?: number; // Valor da Correção Monetária (R$) informado manualmente
   valorOutrosManual?: number; // Valor de Outros (R$) informado manualmente
+  valorIofManual?: number; // Valor do IOF (R$) informado manualmente
+  valorSeguroManual?: number; // Valor do Seguro (R$) informado manualmente
+  valorTaxaRegistroManual?: number; // Valor da Taxa de Registro (R$) informado manualmente
 }
 
 export interface Contrato {
@@ -50,6 +54,7 @@ export interface IndexadorRates {
   CDI: number; // % p.a.
   SELIC: number; // % p.a.
   IPCA: number; // % p.a. (últimos 12 meses)
+  INPC: number; // % p.a.
   TR: number; // % p.a.
   PRE: number; // % p.a. (0 por definição)
 }
@@ -83,9 +88,38 @@ export enum ModalidadeContrato {
   OUTRO = "Outro"
 }
 
+export interface DivergenciaItem {
+  campo: string; // e.g. "Taxa de Juros", "Saldo Devedor", "Carência", etc.
+  valorContrato: string; // e.g. "8.5% a.a."
+  valorDocumento: string; // e.g. "11.5% a.a."
+  status: 'divergente' | 'conforme' | 'atencao';
+  documentoAuxiliar: string; // e.g. "Demonstrativo de Evolução da Dívida"
+  detalhe: string; // Description of the inconsistency or verification
+}
+
 export interface Laudo {
   irregularidadesEncontradas: boolean;
   resumo: string;
   pontosDeAtencao: string[];
   recomendacao: string;
+  divergencias?: DivergenciaItem[];
 }
+
+export interface AssociatedDocument {
+  id: string;
+  name: string;
+  type: string; // e.g. "Demonstrativo", "Planilha de Cálculos", "Notificação", "Laudo", "Outro"
+  uploadDate: string;
+  fileName: string;
+  notes?: string;
+  fileData?: string;
+  mimeType?: string;
+}
+
+export interface ContractHistoryEntry {
+  version: number;
+  contractData: Contrato;
+  updatedAt: string;
+  changeSummary: string;
+}
+

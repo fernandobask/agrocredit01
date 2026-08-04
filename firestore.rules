@@ -6,7 +6,7 @@ service cloud.firestore {
     }
 
     function isSignedIn() {
-      return request.auth != null && request.auth.token.email_verified == true;
+      return request.auth != null;
     }
 
     function isOwner(userId) {
@@ -24,26 +24,21 @@ service cloud.firestore {
     function isValidSimulation(data) {
       return data.keys().hasAll(['userId', 'name', 'contractData', 'scenariosData', 'createdAt', 'updatedAt'])
         && data.userId is string
-        && data.name is string && data.name.size() <= 100
-        && data.createdAt is timestamp
-        && data.updatedAt is timestamp;
+        && data.name is string && data.name.size() <= 250
+        && data.createdAt is string
+        && data.updatedAt is string;
     }
 
     match /simulations/{simulationId} {
       allow read: if isOwner(resource.data.userId);
       
       allow create: if isOwner(incoming().userId)
-        && isValidSimulation(incoming())
-        && incoming().createdAt == request.time
-        && incoming().updatedAt == request.time;
+        && isValidSimulation(incoming());
 
       allow update: if isOwner(existing().userId)
         && isOwner(incoming().userId)
         && incoming().userId == existing().userId
-        && incoming().createdAt == existing().createdAt
-        && isValidSimulation(incoming())
-        && incoming().updatedAt == request.time
-        && incoming().diff(existing()).affectedKeys().hasOnly(['name', 'contractData', 'scenariosData', 'updatedAt']);
+        && isValidSimulation(incoming());
 
       allow delete: if isOwner(existing().userId);
     }
