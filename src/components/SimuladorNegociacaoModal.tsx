@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useRef } from "react";
+import React, { useState, useMemo, useRef, useEffect } from "react";
 import {
   X,
   Calculator,
@@ -20,18 +20,21 @@ import {
   ArrowRight,
   Info,
   Maximize2,
-  Minimize2
+  Minimize2,
+  Edit2,
+  Sliders
 } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { Contrato, IndexadorRates, AssociatedDocument } from "../types";
-import { formatCurrency, formatPercentage, formatDate } from "../utils/math";
+import { formatCurrency, formatPercentage, formatDate, formatCSVNumber } from "../utils/math";
 
 interface SimuladorNegociacaoModalProps {
   isOpen: boolean;
   onClose: () => void;
   contrato: Contrato | null;
   indexadorRates: IndexadorRates;
+  initialProposal?: any;
   onSaveProposal?: (proposalData: any) => void;
 }
 
@@ -54,6 +57,7 @@ export function SimuladorNegociacaoModal({
   onClose,
   contrato,
   indexadorRates,
+  initialProposal,
   onSaveProposal
 }: SimuladorNegociacaoModalProps) {
   // Navigation sub-tab inside simulator
@@ -80,6 +84,96 @@ export function SimuladorNegociacaoModal({
     d.setMonth(d.getMonth() + 1);
     return d.toISOString().split("T")[0];
   });
+
+  // Active Preset Strategy Tracking
+  const [selectedPresetKey, setSelectedPresetKey] = useState<"mercado" | "conservadora" | "avista" | "longoprazo">("mercado");
+  const [selectedPresetBaseline, setSelectedPresetBaseline] = useState({
+    nomeBase: "Padrão Bacen",
+    tipoAcordo: "parcelado" as TipoAcordo,
+    descontoMoraPct: 100,
+    descontoMultaPct: 50,
+    descontoCorrecaoPct: 0,
+    descontoPrincipalPct: 0,
+    numeroParcelas: 24,
+    sistemaAmortizacao: "PRICE" as SistemaAmortizacao,
+    taxaJurosMensal: 0.95
+  });
+
+  // Check if a given field is altered from current preset baseline
+  const isFieldAltered = (field: string) => {
+    if (!selectedPresetBaseline) return false;
+    switch (field) {
+      case "tipoAcordo":
+        return tipoAcordo !== selectedPresetBaseline.tipoAcordo;
+      case "descontoMoraPct":
+        return descontoMoraPct !== selectedPresetBaseline.descontoMoraPct;
+      case "descontoMultaPct":
+        return descontoMultaPct !== selectedPresetBaseline.descontoMultaPct;
+      case "descontoCorrecaoPct":
+        return descontoCorrecaoPct !== selectedPresetBaseline.descontoCorrecaoPct;
+      case "descontoPrincipalPct":
+        return descontoPrincipalPct !== selectedPresetBaseline.descontoPrincipalPct;
+      case "numeroParcelas":
+        return tipoAcordo === "parcelado" && numeroParcelas !== selectedPresetBaseline.numeroParcelas;
+      case "sistemaAmortizacao":
+        return tipoAcordo === "parcelado" && sistemaAmortizacao !== selectedPresetBaseline.sistemaAmortizacao;
+      case "taxaJurosMensal":
+        return tipoAcordo === "parcelado" && taxaJurosMensal !== selectedPresetBaseline.taxaJurosMensal;
+      default:
+        return false;
+    }
+  };
+
+  const hasAnyAlteration = useMemo(() => {
+    return [
+      "tipoAcordo",
+      "descontoMoraPct",
+      "descontoMultaPct",
+      "descontoCorrecaoPct",
+      "descontoPrincipalPct",
+      "numeroParcelas",
+      "sistemaAmortizacao",
+      "taxaJurosMensal"
+    ].some(f => isFieldAltered(f));
+  }, [
+    tipoAcordo,
+    descontoMoraPct,
+    descontoMultaPct,
+    descontoCorrecaoPct,
+    descontoPrincipalPct,
+    numeroParcelas,
+    sistemaAmortizacao,
+    taxaJurosMensal,
+    selectedPresetBaseline
+  ]);
+
+  const currentPresetDisplayName = useMemo(() => {
+    const base = selectedPresetBaseline?.nomeBase || "Padrão Bacen";
+    return hasAnyAlteration ? `${base} - Personalizado` : base;
+  }, [selectedPresetBaseline, hasAnyAlteration]);
+
+  // Load / Sync saved proposal when modal opens or initialProposal changes
+  useEffect(() => {
+    if (isOpen && initialProposal) {
+      if (initialProposal.tipoAcordo) setTipoAcordo(initialProposal.tipoAcordo);
+      if (initialProposal.descontos) {
+        if (typeof initialProposal.descontos.mora === "number") setDescontoMoraPct(initialProposal.descontos.mora);
+        if (typeof initialProposal.descontos.multa === "number") setDescontoMultaPct(initialProposal.descontos.multa);
+        if (typeof initialProposal.descontos.correcao === "number") setDescontoCorrecaoPct(initialProposal.descontos.correcao);
+        if (typeof initialProposal.descontos.principal === "number") setDescontoPrincipalPct(initialProposal.descontos.principal);
+      }
+      if (initialProposal.condicoes) {
+        if (typeof initialProposal.condicoes.valorEntrada === "number") setValorEntrada(initialProposal.condicoes.valorEntrada);
+        if (initialProposal.condicoes.dataEntrada) setDataEntrada(initialProposal.condicoes.dataEntrada);
+        if (typeof initialProposal.condicoes.numeroParcelas === "number") setNumeroParcelas(initialProposal.condicoes.numeroParcelas);
+        if (initialProposal.condicoes.sistemaAmortizacao) setSistemaAmortizacao(initialProposal.condicoes.sistemaAmortizacao);
+        if (typeof initialProposal.condicoes.taxaJurosMensal === "number") setTaxaJurosMensal(initialProposal.condicoes.taxaJurosMensal);
+        if (initialProposal.condicoes.indexadorReajuste) setIndexadorReajuste(initialProposal.condicoes.indexadorReajuste);
+        if (typeof initialProposal.condicoes.taxaIndexadorAnual === "number") setTaxaIndexadorAnual(initialProposal.condicoes.taxaIndexadorAnual);
+        if (initialProposal.condicoes.dataPrimeiraParcela) setDataPrimeiraParcela(initialProposal.condicoes.dataPrimeiraParcela);
+      }
+    }
+  }, [isOpen, initialProposal]);
 
   // State for print/saved feedback
   const [savedSuccess, setSavedSuccess] = useState(false);
@@ -382,6 +476,7 @@ export function SimuladorNegociacaoModal({
   ]);
 
   const aplicarPresetStrategy = (estrategia: "mercado" | "conservadora" | "avista" | "longoprazo") => {
+    setSelectedPresetKey(estrategia);
     if (estrategia === "mercado") {
       setTipoAcordo("parcelado");
       setDescontoMoraPct(100);
@@ -392,6 +487,18 @@ export function SimuladorNegociacaoModal({
       setNumeroParcelas(24);
       setSistemaAmortizacao("PRICE");
       setTaxaJurosMensal(0.95);
+
+      setSelectedPresetBaseline({
+        nomeBase: "Padrão Bacen",
+        tipoAcordo: "parcelado",
+        descontoMoraPct: 100,
+        descontoMultaPct: 50,
+        descontoCorrecaoPct: 0,
+        descontoPrincipalPct: 0,
+        numeroParcelas: 24,
+        sistemaAmortizacao: "PRICE",
+        taxaJurosMensal: 0.95
+      });
     } else if (estrategia === "conservadora") {
       setTipoAcordo("parcelado");
       setDescontoMoraPct(75);
@@ -402,6 +509,18 @@ export function SimuladorNegociacaoModal({
       setNumeroParcelas(36);
       setSistemaAmortizacao("PRICE");
       setTaxaJurosMensal(1.20);
+
+      setSelectedPresetBaseline({
+        nomeBase: "Comitê Gerencial",
+        tipoAcordo: "parcelado",
+        descontoMoraPct: 75,
+        descontoMultaPct: 50,
+        descontoCorrecaoPct: 0,
+        descontoPrincipalPct: 0,
+        numeroParcelas: 36,
+        sistemaAmortizacao: "PRICE",
+        taxaJurosMensal: 1.20
+      });
     } else if (estrategia === "avista") {
       setTipoAcordo("vista");
       setDescontoMoraPct(100);
@@ -409,6 +528,18 @@ export function SimuladorNegociacaoModal({
       setDescontoCorrecaoPct(100);
       setDescontoPrincipalPct(10);
       setValorEntrada(0);
+
+      setSelectedPresetBaseline({
+        nomeBase: "Quitação à Vista",
+        tipoAcordo: "vista",
+        descontoMoraPct: 100,
+        descontoMultaPct: 100,
+        descontoCorrecaoPct: 100,
+        descontoPrincipalPct: 10,
+        numeroParcelas: 1,
+        sistemaAmortizacao: "PRICE",
+        taxaJurosMensal: 0
+      });
     } else if (estrategia === "longoprazo") {
       setTipoAcordo("parcelado");
       setDescontoMoraPct(100);
@@ -419,6 +550,18 @@ export function SimuladorNegociacaoModal({
       setNumeroParcelas(60);
       setSistemaAmortizacao("PRICE");
       setTaxaJurosMensal(1.0);
+
+      setSelectedPresetBaseline({
+        nomeBase: "Parcela Enxuta",
+        tipoAcordo: "parcelado",
+        descontoMoraPct: 100,
+        descontoMultaPct: 50,
+        descontoCorrecaoPct: 0,
+        descontoPrincipalPct: 0,
+        numeroParcelas: 60,
+        sistemaAmortizacao: "PRICE",
+        taxaJurosMensal: 1.0
+      });
     }
   };
 
@@ -443,12 +586,12 @@ export function SimuladorNegociacaoModal({
     const rows = propostaCalculada.cronograma.map(p => [
       p.numero,
       formatDate(p.dataVencimento),
-      p.saldoInicial.toFixed(2),
-      p.amortizacao.toFixed(2),
-      p.juros.toFixed(2),
-      p.correcaoProjetada.toFixed(2),
-      p.valorTotalParcela.toFixed(2),
-      p.saldoFinal.toFixed(2)
+      formatCSVNumber(p.saldoInicial),
+      formatCSVNumber(p.amortizacao),
+      formatCSVNumber(p.juros),
+      formatCSVNumber(p.correcaoProjetada),
+      formatCSVNumber(p.valorTotalParcela),
+      formatCSVNumber(p.saldoFinal)
     ]);
 
     const csvContent = "\uFEFF" + [headers.join(";"), ...rows.map(r => r.join(";"))].join("\n");
@@ -652,25 +795,37 @@ export function SimuladorNegociacaoModal({
             <div className="space-y-6">
               {/* ESTRATÉGIAS PRÉ-SETADAS RÁPIDAS */}
               <div className="bg-slate-900 border border-slate-800 rounded-xl p-4 text-white shadow-sm space-y-3">
-                <div className="flex items-center justify-between">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
                   <div className="flex items-center gap-2">
                     <Sparkles className="w-4 h-4 text-amber-400 animate-pulse" />
                     <span className="text-xs font-bold uppercase tracking-wider text-slate-200">
                       Preset da IA: Estratégias Pré-Configuradas de Mercado
                     </span>
                   </div>
-                  <span className="text-[10px] text-slate-400">Clique para aplicar parâmetros predefinidos</span>
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs font-extrabold text-amber-300 bg-amber-950/80 px-2.5 py-1 rounded-lg border border-amber-800/80 font-mono">
+                      Estratégia Ativa: {currentPresetDisplayName}
+                    </span>
+                  </div>
                 </div>
 
                 <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
                   <button
                     type="button"
                     onClick={() => aplicarPresetStrategy("mercado")}
-                    className="p-2.5 bg-slate-800 hover:bg-slate-750 border border-emerald-500/40 hover:border-emerald-400 rounded-lg text-left transition cursor-pointer group flex flex-col justify-between"
+                    className={`p-2.5 rounded-lg text-left transition cursor-pointer group flex flex-col justify-between border ${
+                      selectedPresetKey === "mercado"
+                        ? "bg-slate-800 border-emerald-400 ring-2 ring-emerald-500/30"
+                        : "bg-slate-800/60 hover:bg-slate-750 border-slate-700 hover:border-emerald-500/40"
+                    }`}
                   >
                     <span className="text-xs font-bold text-emerald-400 group-hover:text-emerald-300 flex items-center justify-between">
                       🚀 Padrão Bacen
-                      <ChevronRight className="w-3.5 h-3.5 opacity-60 group-hover:translate-x-0.5 transition" />
+                      {selectedPresetKey === "mercado" && (
+                        <span className="text-[9px] font-black uppercase px-1.5 py-0.5 rounded bg-emerald-500 text-slate-950">
+                          {hasAnyAlteration ? "Personalizado" : "Ativo"}
+                        </span>
+                      )}
                     </span>
                     <span className="text-[10px] text-slate-300 mt-1">100% Mora • 15% Sinal • 24x (0.95% a.m.)</span>
                   </button>
@@ -678,11 +833,19 @@ export function SimuladorNegociacaoModal({
                   <button
                     type="button"
                     onClick={() => aplicarPresetStrategy("conservadora")}
-                    className="p-2.5 bg-slate-800 hover:bg-slate-750 border border-amber-500/40 hover:border-amber-400 rounded-lg text-left transition cursor-pointer group flex flex-col justify-between"
+                    className={`p-2.5 rounded-lg text-left transition cursor-pointer group flex flex-col justify-between border ${
+                      selectedPresetKey === "conservadora"
+                        ? "bg-slate-800 border-amber-400 ring-2 ring-amber-500/30"
+                        : "bg-slate-800/60 hover:bg-slate-750 border-slate-700 hover:border-amber-500/40"
+                    }`}
                   >
                     <span className="text-xs font-bold text-amber-400 group-hover:text-amber-300 flex items-center justify-between">
                       ⚖️ Comitê Gerencial
-                      <ChevronRight className="w-3.5 h-3.5 opacity-60 group-hover:translate-x-0.5 transition" />
+                      {selectedPresetKey === "conservadora" && (
+                        <span className="text-[9px] font-black uppercase px-1.5 py-0.5 rounded bg-amber-500 text-slate-950">
+                          {hasAnyAlteration ? "Personalizado" : "Ativo"}
+                        </span>
+                      )}
                     </span>
                     <span className="text-[10px] text-slate-300 mt-1">75% Mora • 10% Sinal • 36x (1.20% a.m.)</span>
                   </button>
@@ -690,11 +853,19 @@ export function SimuladorNegociacaoModal({
                   <button
                     type="button"
                     onClick={() => aplicarPresetStrategy("avista")}
-                    className="p-2.5 bg-slate-800 hover:bg-slate-750 border border-blue-500/40 hover:border-blue-400 rounded-lg text-left transition cursor-pointer group flex flex-col justify-between"
+                    className={`p-2.5 rounded-lg text-left transition cursor-pointer group flex flex-col justify-between border ${
+                      selectedPresetKey === "avista"
+                        ? "bg-slate-800 border-blue-400 ring-2 ring-blue-500/30"
+                        : "bg-slate-800/60 hover:bg-slate-750 border-slate-700 hover:border-blue-500/40"
+                    }`}
                   >
                     <span className="text-xs font-bold text-blue-400 group-hover:text-blue-300 flex items-center justify-between">
                       💎 Quitação à Vista
-                      <ChevronRight className="w-3.5 h-3.5 opacity-60 group-hover:translate-x-0.5 transition" />
+                      {selectedPresetKey === "avista" && (
+                        <span className="text-[9px] font-black uppercase px-1.5 py-0.5 rounded bg-blue-500 text-slate-950">
+                          {hasAnyAlteration ? "Personalizado" : "Ativo"}
+                        </span>
+                      )}
                     </span>
                     <span className="text-[10px] text-slate-300 mt-1">100% Mora + 10% Abatimento no Principal</span>
                   </button>
@@ -702,11 +873,19 @@ export function SimuladorNegociacaoModal({
                   <button
                     type="button"
                     onClick={() => aplicarPresetStrategy("longoprazo")}
-                    className="p-2.5 bg-slate-800 hover:bg-slate-750 border border-purple-500/40 hover:border-purple-400 rounded-lg text-left transition cursor-pointer group flex flex-col justify-between"
+                    className={`p-2.5 rounded-lg text-left transition cursor-pointer group flex flex-col justify-between border ${
+                      selectedPresetKey === "longoprazo"
+                        ? "bg-slate-800 border-purple-400 ring-2 ring-purple-500/30"
+                        : "bg-slate-800/60 hover:bg-slate-750 border-slate-700 hover:border-purple-500/40"
+                    }`}
                   >
                     <span className="text-xs font-bold text-purple-400 group-hover:text-purple-300 flex items-center justify-between">
                       ⚡ Parcela Enxuta
-                      <ChevronRight className="w-3.5 h-3.5 opacity-60 group-hover:translate-x-0.5 transition" />
+                      {selectedPresetKey === "longoprazo" && (
+                        <span className="text-[9px] font-black uppercase px-1.5 py-0.5 rounded bg-purple-500 text-slate-950">
+                          {hasAnyAlteration ? "Personalizado" : "Ativo"}
+                        </span>
+                      )}
                     </span>
                     <span className="text-[10px] text-slate-300 mt-1">100% Mora • 5% Sinal • 60x (1.00% a.m.)</span>
                   </button>
@@ -719,8 +898,12 @@ export function SimuladorNegociacaoModal({
                   <div className="flex items-center gap-2">
                     <Zap className="w-5 h-5 text-amber-500" />
                     <div>
-                      <h3 className="font-bold text-slate-800 text-sm">
-                        Termômetro de Inteligência de Crédito & Prática Legal de Mercado
+                      <h3 className="font-bold text-slate-800 text-sm flex flex-wrap items-center gap-2">
+                        Termômetro de Inteligência de Crédito & Prática Legal
+                        <span className="px-2.5 py-0.5 bg-slate-900 text-amber-300 text-xs font-black rounded-md border border-slate-700 font-mono flex items-center gap-1">
+                          <Sparkles className="w-3 h-3 text-amber-400" />
+                          {currentPresetDisplayName}
+                        </span>
                       </h3>
                       <p className="text-[11px] text-slate-500">
                         Análise de aderência à jurisprudência do STJ, CDC Art. 52 e resoluções do Banco Central (Bacen).
@@ -733,12 +916,21 @@ export function SimuladorNegociacaoModal({
                   </span>
                 </div>
 
+                {hasAnyAlteration && (
+                  <div className="bg-amber-50 border border-amber-200 text-amber-900 rounded-lg p-2.5 text-xs font-medium flex items-center gap-2 animate-fadeIn">
+                    <Sliders className="w-4 h-4 text-amber-600 shrink-0" />
+                    <span>
+                      Score de aprovação reanalisado em tempo real para a versão <strong>{currentPresetDisplayName}</strong>. Os parâmetros modificados estão destacados abaixo com borda e selo <span className="px-1.5 py-0.5 bg-amber-500 text-white font-extrabold rounded text-[9px] uppercase">Alterado</span>.
+                    </span>
+                  </div>
+                )}
+
                 {/* Meter Progress Bar */}
                 <div className="space-y-1.5">
                   <div className="flex justify-between items-center text-xs font-bold text-slate-700">
                     <span className="flex items-center gap-1.5">
-                      Score de Aprovação da Proposta:
-                      <span className="font-mono text-sm text-slate-900">{inteligenciaMercado.score}/100 pts</span>
+                      Score de Aprovação ({currentPresetDisplayName}):
+                      <span className="font-mono text-sm text-slate-900 font-black">{inteligenciaMercado.score}/100 pts</span>
                     </span>
                     <span className="text-[11px] font-normal text-slate-500">
                       {inteligenciaMercado.score >= 78 ? "Baixo Risco de Inadimplência" : inteligenciaMercado.score >= 55 ? "Risco Moderado" : "Elevada Dependência de Alçada"}
@@ -808,8 +1000,17 @@ export function SimuladorNegociacaoModal({
                 </div>
 
                 {/* Tipo de Acordo Selection */}
-                <div className="space-y-2">
-                  <label className="text-xs font-bold text-slate-700 uppercase tracking-wider">Modalidade do Acordo</label>
+                <div className={`space-y-2 p-2.5 rounded-xl border transition-all ${
+                  isFieldAltered("tipoAcordo") ? "bg-amber-50/80 border-amber-400 ring-2 ring-amber-400/30" : "border-transparent"
+                }`}>
+                  <div className="flex justify-between items-center">
+                    <label className="text-xs font-bold text-slate-700 uppercase tracking-wider">Modalidade do Acordo</label>
+                    {isFieldAltered("tipoAcordo") && (
+                      <span className="px-1.5 py-0.5 bg-amber-500 text-white rounded text-[9px] font-black uppercase flex items-center gap-1">
+                        <Edit2 className="w-2.5 h-2.5" /> Alterado
+                      </span>
+                    )}
+                  </div>
                   <div className="grid grid-cols-2 gap-3">
                     <button
                       type="button"
@@ -848,10 +1049,23 @@ export function SimuladorNegociacaoModal({
                 {/* Sliders for Discounts */}
                 <div className="space-y-4 pt-2 border-t border-slate-100">
                   {/* Desconto Juros de Mora */}
-                  <div className="space-y-1 bg-slate-50 p-3 rounded-lg border border-slate-200">
+                  <div className={`space-y-1 p-3 rounded-lg border transition-all ${
+                    isFieldAltered("descontoMoraPct")
+                      ? "bg-amber-50/80 border-amber-400 ring-2 ring-amber-400/30"
+                      : "bg-slate-50 border-slate-200"
+                  }`}>
                     <div className="flex justify-between items-center text-xs">
-                      <span className="font-bold text-slate-700">Desconto em Juros de Mora (1%/m):</span>
-                      <span className="font-mono font-bold text-emerald-700">{descontoMoraPct}% ({formatCurrency(apuracaoBase.moraAcumulada * (descontoMoraPct / 100))})</span>
+                      <span className="font-bold text-slate-700 flex items-center gap-1.5">
+                        Desconto em Juros de Mora (1%/m):
+                        {isFieldAltered("descontoMoraPct") && (
+                          <span className="px-1.5 py-0.5 bg-amber-500 text-white rounded text-[9px] font-black uppercase flex items-center gap-0.5">
+                            <Edit2 className="w-2.5 h-2.5" /> Alterado
+                          </span>
+                        )}
+                      </span>
+                      <span className="font-mono font-bold text-emerald-700">
+                        {descontoMoraPct}% ({formatCurrency(apuracaoBase.moraAcumulada * (descontoMoraPct / 100))})
+                      </span>
                     </div>
                     <input
                       type="range"
@@ -862,13 +1076,31 @@ export function SimuladorNegociacaoModal({
                       onChange={e => setDescontoMoraPct(Number(e.target.value))}
                       className="w-full accent-emerald-600 cursor-pointer"
                     />
+                    {isFieldAltered("descontoMoraPct") && (
+                      <p className="text-[10px] text-amber-800 font-semibold mt-0.5">
+                        Valor base no preset ({selectedPresetBaseline.nomeBase}): {selectedPresetBaseline.descontoMoraPct}%
+                      </p>
+                    )}
                   </div>
 
                   {/* Desconto Multa Moratória */}
-                  <div className="space-y-1 bg-slate-50 p-3 rounded-lg border border-slate-200">
+                  <div className={`space-y-1 p-3 rounded-lg border transition-all ${
+                    isFieldAltered("descontoMultaPct")
+                      ? "bg-amber-50/80 border-amber-400 ring-2 ring-amber-400/30"
+                      : "bg-slate-50 border-slate-200"
+                  }`}>
                     <div className="flex justify-between items-center text-xs">
-                      <span className="font-bold text-slate-700">Desconto na Multa Moratória (2%):</span>
-                      <span className="font-mono font-bold text-emerald-700">{descontoMultaPct}% ({formatCurrency(apuracaoBase.multaAcumulada * (descontoMultaPct / 100))})</span>
+                      <span className="font-bold text-slate-700 flex items-center gap-1.5">
+                        Desconto na Multa Moratória (2%):
+                        {isFieldAltered("descontoMultaPct") && (
+                          <span className="px-1.5 py-0.5 bg-amber-500 text-white rounded text-[9px] font-black uppercase flex items-center gap-0.5">
+                            <Edit2 className="w-2.5 h-2.5" /> Alterado
+                          </span>
+                        )}
+                      </span>
+                      <span className="font-mono font-bold text-emerald-700">
+                        {descontoMultaPct}% ({formatCurrency(apuracaoBase.multaAcumulada * (descontoMultaPct / 100))})
+                      </span>
                     </div>
                     <input
                       type="range"
@@ -879,13 +1111,31 @@ export function SimuladorNegociacaoModal({
                       onChange={e => setDescontoMultaPct(Number(e.target.value))}
                       className="w-full accent-emerald-600 cursor-pointer"
                     />
+                    {isFieldAltered("descontoMultaPct") && (
+                      <p className="text-[10px] text-amber-800 font-semibold mt-0.5">
+                        Valor base no preset ({selectedPresetBaseline.nomeBase}): {selectedPresetBaseline.descontoMultaPct}%
+                      </p>
+                    )}
                   </div>
 
                   {/* Desconto Correção Monetária */}
-                  <div className="space-y-1 bg-slate-50 p-3 rounded-lg border border-slate-200">
+                  <div className={`space-y-1 p-3 rounded-lg border transition-all ${
+                    isFieldAltered("descontoCorrecaoPct")
+                      ? "bg-amber-50/80 border-amber-400 ring-2 ring-amber-400/30"
+                      : "bg-slate-50 border-slate-200"
+                  }`}>
                     <div className="flex justify-between items-center text-xs">
-                      <span className="font-bold text-slate-700">Abatimento na Correção Monetária:</span>
-                      <span className="font-mono font-bold text-emerald-700">{descontoCorrecaoPct}% ({formatCurrency(apuracaoBase.correcaoAcumulada * (descontoCorrecaoPct / 100))})</span>
+                      <span className="font-bold text-slate-700 flex items-center gap-1.5">
+                        Abatimento na Correção Monetária:
+                        {isFieldAltered("descontoCorrecaoPct") && (
+                          <span className="px-1.5 py-0.5 bg-amber-500 text-white rounded text-[9px] font-black uppercase flex items-center gap-0.5">
+                            <Edit2 className="w-2.5 h-2.5" /> Alterado
+                          </span>
+                        )}
+                      </span>
+                      <span className="font-mono font-bold text-emerald-700">
+                        {descontoCorrecaoPct}% ({formatCurrency(apuracaoBase.correcaoAcumulada * (descontoCorrecaoPct / 100))})
+                      </span>
                     </div>
                     <input
                       type="range"
@@ -896,13 +1146,31 @@ export function SimuladorNegociacaoModal({
                       onChange={e => setDescontoCorrecaoPct(Number(e.target.value))}
                       className="w-full accent-emerald-600 cursor-pointer"
                     />
+                    {isFieldAltered("descontoCorrecaoPct") && (
+                      <p className="text-[10px] text-amber-800 font-semibold mt-0.5">
+                        Valor base no preset ({selectedPresetBaseline.nomeBase}): {selectedPresetBaseline.descontoCorrecaoPct}%
+                      </p>
+                    )}
                   </div>
 
                   {/* Abatimento Direto no Principal */}
-                  <div className="space-y-1 bg-amber-50/50 p-3 rounded-lg border border-amber-200">
+                  <div className={`space-y-1 p-3 rounded-lg border transition-all ${
+                    isFieldAltered("descontoPrincipalPct")
+                      ? "bg-amber-100/90 border-amber-500 ring-2 ring-amber-400/40"
+                      : "bg-amber-50/50 border-amber-200"
+                  }`}>
                     <div className="flex justify-between items-center text-xs">
-                      <span className="font-bold text-amber-900">Desconto Excepcional no Principal:</span>
-                      <span className="font-mono font-bold text-amber-800">{descontoPrincipalPct}% ({formatCurrency(apuracaoBase.principalResidual * (descontoPrincipalPct / 100))})</span>
+                      <span className="font-bold text-amber-900 flex items-center gap-1.5">
+                        Desconto Excepcional no Principal:
+                        {isFieldAltered("descontoPrincipalPct") && (
+                          <span className="px-1.5 py-0.5 bg-amber-600 text-white rounded text-[9px] font-black uppercase flex items-center gap-0.5">
+                            <Edit2 className="w-2.5 h-2.5" /> Alterado
+                          </span>
+                        )}
+                      </span>
+                      <span className="font-mono font-bold text-amber-800">
+                        {descontoPrincipalPct}% ({formatCurrency(apuracaoBase.principalResidual * (descontoPrincipalPct / 100))})
+                      </span>
                     </div>
                     <input
                       type="range"
@@ -913,6 +1181,11 @@ export function SimuladorNegociacaoModal({
                       onChange={e => setDescontoPrincipalPct(Number(e.target.value))}
                       className="w-full accent-amber-600 cursor-pointer"
                     />
+                    {isFieldAltered("descontoPrincipalPct") && (
+                      <p className="text-[10px] text-amber-800 font-semibold mt-0.5">
+                        Valor base no preset ({selectedPresetBaseline.nomeBase}): {selectedPresetBaseline.descontoPrincipalPct}%
+                      </p>
+                    )}
                   </div>
                 </div>
               </div>
@@ -951,9 +1224,20 @@ export function SimuladorNegociacaoModal({
                     </div>
 
                     {/* Número de Parcelas & Presets */}
-                    <div className="space-y-1.5">
+                    <div className={`space-y-1.5 p-3 rounded-lg border transition-all ${
+                      isFieldAltered("numeroParcelas")
+                        ? "bg-amber-50/80 border-amber-400 ring-2 ring-amber-400/30"
+                        : "bg-slate-50 border-slate-200"
+                    }`}>
                       <div className="flex justify-between items-center text-xs font-bold text-slate-700">
-                        <span>Número de Parcelas Mensais:</span>
+                        <span className="flex items-center gap-1.5">
+                          Número de Parcelas Mensais:
+                          {isFieldAltered("numeroParcelas") && (
+                            <span className="px-1.5 py-0.5 bg-amber-500 text-white rounded text-[9px] font-black uppercase flex items-center gap-0.5">
+                              <Edit2 className="w-2.5 h-2.5" /> Alterado
+                            </span>
+                          )}
+                        </span>
                         <span className="font-mono text-emerald-700 font-extrabold">{numeroParcelas} parcelas</span>
                       </div>
                       <div className="flex items-center gap-2">
@@ -966,6 +1250,11 @@ export function SimuladorNegociacaoModal({
                           className="flex-1 accent-emerald-600 cursor-pointer"
                         />
                       </div>
+                      {isFieldAltered("numeroParcelas") && (
+                        <p className="text-[10px] text-amber-800 font-semibold mt-0.5">
+                          Valor base no preset ({selectedPresetBaseline.nomeBase}): {selectedPresetBaseline.numeroParcelas} parcelas
+                        </p>
+                      )}
                       <div className="flex flex-wrap gap-1.5 pt-1">
                         {[6, 12, 24, 36, 48, 60, 120].map(p => (
                           <button
@@ -975,7 +1264,7 @@ export function SimuladorNegociacaoModal({
                             className={`px-2.5 py-1 text-[11px] font-bold rounded-lg border transition cursor-pointer ${
                               numeroParcelas === p
                                 ? "bg-emerald-600 text-white border-emerald-600"
-                                : "bg-slate-50 text-slate-600 border-slate-200 hover:bg-slate-100"
+                                : "bg-white text-slate-600 border-slate-200 hover:bg-slate-100"
                             }`}
                           >
                             {p}x
@@ -986,27 +1275,59 @@ export function SimuladorNegociacaoModal({
 
                     {/* Sistema de Amortização & Taxa de Juros */}
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-2 border-t border-slate-100">
-                      <div>
-                        <label className="text-[11px] font-bold text-slate-600 uppercase tracking-wider block mb-1">Amortização</label>
+                      <div className={`p-2.5 rounded-lg border transition-all ${
+                        isFieldAltered("sistemaAmortizacao")
+                          ? "bg-amber-50/80 border-amber-400 ring-2 ring-amber-400/30"
+                          : "bg-slate-50 border-slate-200"
+                      }`}>
+                        <div className="flex items-center justify-between mb-1">
+                          <label className="text-[11px] font-bold text-slate-600 uppercase tracking-wider block">Amortização</label>
+                          {isFieldAltered("sistemaAmortizacao") && (
+                            <span className="px-1.5 py-0.5 bg-amber-500 text-white rounded text-[9px] font-black uppercase flex items-center gap-0.5">
+                              <Edit2 className="w-2.5 h-2.5" /> Alterado
+                            </span>
+                          )}
+                        </div>
                         <select
                           value={sistemaAmortizacao}
                           onChange={e => setSistemaAmortizacao(e.target.value as SistemaAmortizacao)}
-                          className="w-full bg-slate-50 border border-slate-300 rounded-lg p-2.5 text-xs font-bold text-slate-800 focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                          className="w-full bg-white border border-slate-300 rounded-lg p-2 text-xs font-bold text-slate-800 focus:outline-none focus:ring-2 focus:ring-emerald-500"
                         >
                           <option value="PRICE">Tabela PRICE (Prestação Fixa)</option>
                           <option value="SAC">Tabela SAC (Amortização Constante)</option>
                         </select>
+                        {isFieldAltered("sistemaAmortizacao") && (
+                          <p className="text-[10px] text-amber-800 font-semibold mt-1">
+                            Base: {selectedPresetBaseline.sistemaAmortizacao}
+                          </p>
+                        )}
                       </div>
 
-                      <div>
-                        <label className="text-[11px] font-bold text-slate-600 uppercase tracking-wider block mb-1">Taxa Juros Negociada (% a.m.)</label>
+                      <div className={`p-2.5 rounded-lg border transition-all ${
+                        isFieldAltered("taxaJurosMensal")
+                          ? "bg-amber-50/80 border-amber-400 ring-2 ring-amber-400/30"
+                          : "bg-slate-50 border-slate-200"
+                      }`}>
+                        <div className="flex items-center justify-between mb-1">
+                          <label className="text-[11px] font-bold text-slate-600 uppercase tracking-wider block">Taxa Juros Negociada (% a.m.)</label>
+                          {isFieldAltered("taxaJurosMensal") && (
+                            <span className="px-1.5 py-0.5 bg-amber-500 text-white rounded text-[9px] font-black uppercase flex items-center gap-0.5">
+                              <Edit2 className="w-2.5 h-2.5" /> Alterado
+                            </span>
+                          )}
+                        </div>
                         <input
                           type="number"
                           step="0.05"
                           value={taxaJurosMensal}
                           onChange={e => setTaxaJurosMensal(Number(e.target.value))}
-                          className="w-full bg-slate-50 border border-slate-300 rounded-lg p-2.5 text-xs font-bold text-slate-800 focus:outline-none focus:ring-2 focus:ring-emerald-500 font-mono"
+                          className="w-full bg-white border border-slate-300 rounded-lg p-2 text-xs font-bold text-slate-800 focus:outline-none focus:ring-2 focus:ring-emerald-500 font-mono"
                         />
+                        {isFieldAltered("taxaJurosMensal") && (
+                          <p className="text-[10px] text-amber-800 font-semibold mt-1">
+                            Base: {selectedPresetBaseline.taxaJurosMensal}% a.m.
+                          </p>
+                        )}
                       </div>
                     </div>
 

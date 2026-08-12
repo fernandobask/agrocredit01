@@ -46,7 +46,8 @@ import {
   ArrowRight,
   ShieldCheck,
   UserCheck,
-  Clock
+  Clock,
+  Edit3
 } from "lucide-react";
 import { motion, AnimatePresence, useDragControls } from "motion/react";
 import {
@@ -88,6 +89,7 @@ import {
 import { MemoriaCalculoModal } from "./components/MemoriaCalculoModal";
 import { SimuladorNegociacaoModal } from "./components/SimuladorNegociacaoModal";
 import { AuthModal } from "./components/AuthModal";
+import { TaxasManualModal } from "./components/TaxasManualModal";
 import { auth, loginWithGoogle, loginAnonymously, checkRedirectLoginResult, logout, db, handleFirestoreError, OperationType, getAccessToken } from "./firebase";
 import { onAuthStateChanged, User } from "firebase/auth";
 import { collection, doc, setDoc, getDocs, deleteDoc, query, where } from "firebase/firestore";
@@ -204,6 +206,7 @@ export default function App() {
   const [lastUpdated, setLastUpdated] = useState<string>("");
   const [historicalIndexadores, setHistoricalIndexadores] = useState<any[]>([]);
   const [loadingHistorical, setLoadingHistorical] = useState(false);
+  const [taxasModalOpen, setTaxasModalOpen] = useState(false);
 
   // AI Extraction State
   const [analyzing, setAnalyzing] = useState(false);
@@ -381,27 +384,90 @@ export default function App() {
     valorIndexadorAnual?: number;
   }>({ isOpen: false });
 
-  // Simulador de Negociação Modal State
+  // Simulador de Negociação Modal State & Saved Proposal State
   const [simuladorModalOpen, setSimuladorModalOpen] = useState(false);
+  const [savedProposal, setSavedProposal] = useState<any>(() => {
+    try {
+      const stored = localStorage.getItem("agrocredit_proposal_" + (contrato?.numero || "default"));
+      return stored ? JSON.parse(stored) : null;
+    } catch {
+      return null;
+    }
+  });
+
+  // Sync saved proposal when contract changes
+  useEffect(() => {
+    if (contrato?.numero) {
+      try {
+        const stored = localStorage.getItem("agrocredit_proposal_" + contrato.numero);
+        if (stored) {
+          setSavedProposal(JSON.parse(stored));
+        } else {
+          setSavedProposal(null);
+        }
+      } catch (e) {
+        console.error("Erro ao carregar proposta do localStorage:", e);
+      }
+    }
+  }, [contrato?.numero]);
 
   const handleSaveProposalToFirestore = async (proposalData: any) => {
-    if (!user) {
-      showToast("Faça login no Firebase para salvar propostas no banco de dados.", "info");
-      return;
-    }
+    // 1. Update active React state
+    setSavedProposal(proposalData);
+
+    // 2. Persist in localStorage immediately
+    const key = "agrocredit_proposal_" + (contrato.numero || "default");
     try {
-      const docRef = doc(collection(db, "propostas_negociacao"));
-      await setDoc(docRef, {
-        id: docRef.id,
-        userId: user.uid,
-        contratoNumero: contrato.numero,
-        emitente: contrato.emitente,
-        proposalData,
-        createdAt: new Date().toISOString()
-      });
-      showToast("Proposta de negociação salva no Firestore com sucesso!", "success");
-    } catch (err: any) {
-      showToast("Erro ao salvar proposta: " + err.message, "error");
+      localStorage.setItem(key, JSON.stringify(proposalData));
+    } catch (e) {
+      console.error("Erro localStorage:", e);
+    }
+
+    // 3. Automatically add or update the "Proposta Repactuada" scenario in scenarios list
+    const proposalCenarioId = "cen-proposta-salva";
+    const taxaAnual = (proposalData.condicoes?.taxaJurosMensal || 1.0) * 12;
+    const indexadorNome = proposalData.condicoes?.indexadorReajuste || "IPCA";
+
+    setCenarios(prev => {
+      const exists = prev.some(c => c.id === proposalCenarioId);
+      if (exists) {
+        return prev.map(c => c.id === proposalCenarioId ? {
+          ...c,
+          nome: "Proposta Repactuada",
+          indexador: indexadorNome as any,
+          taxaJurosAnual: taxaAnual
+        } : c);
+      } else {
+        return [
+          ...prev,
+          {
+            id: proposalCenarioId,
+            nome: "Proposta Repactuada",
+            indexador: indexadorNome as any,
+            taxaJurosAnual: taxaAnual
+          }
+        ];
+      }
+    });
+
+    // 4. Save to Firestore if authenticated
+    if (user) {
+      try {
+        const docRef = doc(collection(db, "propostas_negociacao"));
+        await setDoc(docRef, {
+          id: docRef.id,
+          userId: user.uid,
+          contratoNumero: contrato.numero || "S/N",
+          emitente: contrato.emitente || "Produtor Rural",
+          proposalData,
+          createdAt: new Date().toISOString()
+        });
+        showToast("Proposta de negociação salva localmente e na nuvem!", "success");
+      } catch (err: any) {
+        showToast("Proposta salva localmente com sucesso! (Erro na nuvem: " + err.message + ")", "info");
+      }
+    } else {
+      showToast("Proposta de negociação salva localmente com sucesso!", "success");
     }
   };
 
@@ -2121,8 +2187,18 @@ export default function App() {
 
         {/* Indexers Official Status Card in Sidebar */}
         <div className={`border-t border-slate-800 pt-6 mt-6 space-y-4 w-full ${!isSidebarOpen && 'hidden'}`}>
-          <div className="text-xs text-slate-500 uppercase font-bold tracking-wider">
-            Status dos Indexadores
+          <div className="flex items-center justify-between">
+            <div className="text-xs text-slate-500 uppercase font-bold tracking-wider">
+              Status dos Indexadores
+            </div>
+            <button
+              onClick={() => setTaxasModalOpen(true)}
+              className="px-2 py-0.5 bg-emerald-950 hover:bg-emerald-900 text-emerald-400 border border-emerald-800/80 rounded text-[10px] font-bold flex items-center gap-1 cursor-pointer transition"
+              title="Ajustar taxas manualmente"
+            >
+              <Edit3 className="w-2.5 h-2.5" />
+              <span>Ajustar Taxas</span>
+            </button>
           </div>
           
           <div className="space-y-3 text-xs bg-slate-950 p-3.5 rounded-xl border border-slate-800">
@@ -2280,6 +2356,14 @@ export default function App() {
               </>
             )}
             
+            <button
+              onClick={() => setTaxasModalOpen(true)}
+              className="px-3.5 py-2 bg-slate-100 hover:bg-slate-200 text-slate-800 border border-slate-300 rounded-xl text-xs font-bold transition flex items-center gap-1.5 cursor-pointer shadow-xs"
+              title="Abrir painel de ajuste manual de taxas e indexadores"
+            >
+              <Coins className="w-4 h-4 text-emerald-600" />
+              <span>Ajustar Taxas</span>
+            </button>
             <button
               onClick={() => setSimuladorModalOpen(true)}
               className="px-3.5 py-2 bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-700 hover:to-teal-700 text-white rounded-xl text-xs font-bold shadow-xs transition flex items-center gap-1.5 cursor-pointer"
@@ -3128,17 +3212,26 @@ export default function App() {
                     <p className="text-xs text-slate-500">Customize as taxas macroeconômicas oficiais vigentes do Banco Central ou simule novas projeções financeiras.</p>
                   </div>
                 </div>
-                <button
-                  onClick={() => {
-                    fetchIndexadores();
-                    fetchHistoricalIndexadores();
-                  }}
-                  disabled={loadingIndexadores || loadingHistorical}
-                  className="px-3.5 py-2 bg-slate-50 hover:bg-slate-100 text-slate-700 border border-slate-200 rounded-lg text-xs font-bold transition flex items-center gap-1.5 cursor-pointer"
-                >
-                  <RefreshCw className={`w-3.5 h-3.5 ${(loadingIndexadores || loadingHistorical) ? "animate-spin" : ""}`} />
-                  Recarregar Índices Oficiais
-                </button>
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={() => setTaxasModalOpen(true)}
+                    className="px-3.5 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-xs font-bold transition flex items-center gap-1.5 cursor-pointer shadow-xs"
+                  >
+                    <Edit3 className="w-3.5 h-3.5" />
+                    Ajustar Taxas Manualmente
+                  </button>
+                  <button
+                    onClick={() => {
+                      fetchIndexadores();
+                      fetchHistoricalIndexadores();
+                    }}
+                    disabled={loadingIndexadores || loadingHistorical}
+                    className="px-3.5 py-2 bg-slate-50 hover:bg-slate-100 text-slate-700 border border-slate-200 rounded-lg text-xs font-bold transition flex items-center gap-1.5 cursor-pointer"
+                  >
+                    <RefreshCw className={`w-3.5 h-3.5 ${(loadingIndexadores || loadingHistorical) ? "animate-spin" : ""}`} />
+                    Recarregar Índices Oficiais
+                  </button>
+                </div>
               </div>
 
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4">
@@ -5221,6 +5314,7 @@ export default function App() {
         onClose={() => setSimuladorModalOpen(false)}
         contrato={contrato}
         indexadorRates={indexadores}
+        initialProposal={savedProposal}
         onSaveProposal={handleSaveProposalToFirestore}
       />
 
@@ -5229,6 +5323,21 @@ export default function App() {
         isOpen={isAuthModalOpen}
         onClose={() => setIsAuthModalOpen(false)}
         onSuccess={(msg) => showToast(msg, "success")}
+      />
+
+      {/* Modal de Ajuste Manual de Taxas e Indexadores */}
+      <TaxasManualModal
+        isOpen={taxasModalOpen}
+        onClose={() => setTaxasModalOpen(false)}
+        indexadores={indexadores}
+        onSave={(newRates) => {
+          setIndexadores(newRates);
+          setLastUpdated("Ajuste Manual do Usuário (" + new Date().toLocaleTimeString("pt-BR") + ")");
+          showToast("Taxas atualizadas manualmente com sucesso!", "success");
+        }}
+        onFetchOfficial={fetchIndexadores}
+        loadingOfficial={loadingIndexadores}
+        lastUpdatedStr={lastUpdated}
       />
     </div>
   );

@@ -1,7 +1,7 @@
 import React, { useState, useMemo, useRef } from "react";
 import { X, Calculator, Copy, Check, Printer, ShieldCheck, Download, Search, Table, Layers, ArrowRight, Maximize2, Minimize2, AlertTriangle, AlertCircle, DollarSign, Calendar, FileText, CheckCircle2, RotateCcw, FileSpreadsheet, Edit3 } from "lucide-react";
 import { useVirtualizer } from "@tanstack/react-virtual";
-import { formatCurrency, formatDate, calcularProjecaoMensal, exportMensalToCSV, parseDateSafely, getDaysBetween } from "../utils/math";
+import { formatCurrency, formatDate, calcularProjecaoMensal, exportMensalToCSV, parseDateSafely, getDaysBetween, formatCSVNumber } from "../utils/math";
 import { Contrato, ProjecaoParcela, Indexador, IndexadorRates, AssociatedDocument } from "../types";
 
 interface MemoriaCalculoModalProps {
@@ -161,7 +161,10 @@ export function MemoriaCalculoModal({
 
     const vencidas = parcelasLiquidadas.filter(p => p.isVencida);
     const pagas = parcelasLiquidadas.filter(p => p.isPaga);
+    const vincendas = parcelasLiquidadas.filter(p => !p.isPaga && !p.isVencida);
+
     const totalOriginalVencido = vencidas.reduce((acc, c) => acc + c.saldoDevedorPrincipal, 0);
+    const saldoVincendo = vincendas.reduce((acc, c) => acc + c.saldoDevedorPrincipal, 0);
     const totalPagoApurado = parcelasLiquidadas.reduce((acc, c) => acc + c.valorPago, 0);
     const totalCorrecao = vencidas.reduce((acc, c) => acc + c.correcaoMonetaria, 0);
     const totalBaseCorrigida = vencidas.reduce((acc, c) => acc + c.valorAtualizado, 0);
@@ -171,14 +174,17 @@ export function MemoriaCalculoModal({
 
     const valHonorarios = incluirHonorarios ? subtotalAtraso * (honorariosPct / 100) : 0;
     const totalGeralDebitoLiquido = subtotalAtraso + valHonorarios;
+    const totalLiquidacaoContrato = totalGeralDebitoLiquido + saldoVincendo;
 
     return {
       dtBase,
       parcelas: parcelasLiquidadas,
       qtdVencidas: vencidas.length,
       qtdPagas: pagas.length,
+      qtdVincendas: vincendas.length,
       qtdTotal: parcelasLiquidadas.length,
       totalOriginalVencido,
+      saldoVincendo,
       totalPagoApurado,
       totalCorrecao,
       totalBaseCorrigida,
@@ -186,7 +192,8 @@ export function MemoriaCalculoModal({
       totalJurosMora,
       subtotalAtraso,
       valHonorarios,
-      totalGeralDebitoLiquido
+      totalGeralDebitoLiquido,
+      totalLiquidacaoContrato
     };
   }, [contrato, dataBaseApuracao, idxNome, currentRates, taxaMultaPct, taxaMoraMesPct, honorariosPct, incluirHonorarios, paymentOverrides]);
 
@@ -935,7 +942,7 @@ Manual de Crédito Rural (MCR - Banco Central) e Resoluções do CMN.
               
               {/* Top Consolidated Overdue Metrics Cards */}
               {liquidanteReal && (
-                <div className="grid grid-cols-2 md:grid-cols-5 gap-2.5">
+                <div className="grid grid-cols-2 lg:grid-cols-6 gap-2.5">
                   <div className="bg-slate-50 border border-slate-200 rounded-xl p-3">
                     <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Principal Vencido</span>
                     <span className="text-sm font-extrabold text-slate-800">{formatCurrency(liquidanteReal.totalOriginalVencido)}</span>
@@ -960,10 +967,16 @@ Manual de Crédito Rural (MCR - Banco Central) e Resoluções do CMN.
                     <span className="text-[10px] text-slate-500 block">{taxaMultaPct}% multa + {taxaMoraMesPct}%/m</span>
                   </div>
 
-                  <div className="col-span-2 md:col-span-1 bg-slate-900 text-white rounded-xl p-3 shadow-xs border border-slate-800">
-                    <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Débito Total Liquidado</span>
-                    <span className="text-base font-extrabold text-emerald-400">{formatCurrency(liquidanteReal.totalGeralDebitoLiquido)}</span>
-                    <span className="text-[10px] text-slate-400 block">Posição em {formatDate(dataBaseApuracao)}</span>
+                  <div className="bg-slate-900 text-white rounded-xl p-3 shadow-xs border border-slate-800">
+                    <span className="text-[10px] font-bold text-amber-400 uppercase tracking-wider block">Débito Vencido em Aberto</span>
+                    <span className="text-sm font-extrabold text-amber-300">{formatCurrency(liquidanteReal.totalGeralDebitoLiquido)}</span>
+                    <span className="text-[10px] text-slate-400 block">Vencido + Encargos + Honorários</span>
+                  </div>
+
+                  <div className="bg-slate-950 text-white rounded-xl p-3 shadow-sm border border-emerald-500/50">
+                    <span className="text-[10px] font-extrabold text-emerald-400 uppercase tracking-wider block">Liquidação Total Contrato</span>
+                    <span className="text-base font-black text-emerald-300">{formatCurrency(liquidanteReal.totalLiquidacaoContrato)}</span>
+                    <span className="text-[10px] text-slate-300 block">Vencido + Vincendo ({liquidanteReal.qtdVincendas}x)</span>
                   </div>
                 </div>
               )}
@@ -1213,11 +1226,27 @@ Manual de Crédito Rural (MCR - Banco Central) e Resoluções do CMN.
                           </tr>
                         )}
                         <tr className="bg-slate-950 text-white border-t border-slate-800">
-                          <td colSpan={10} className="py-2.5 px-3 text-right uppercase font-extrabold text-xs text-slate-300">
-                            Liquidação Total do Débito:
+                          <td colSpan={10} className="py-2.5 px-3 text-right uppercase font-extrabold text-xs text-amber-300">
+                            Liquidação Total do Débito Vencido em Atraso:
                           </td>
-                          <td className="py-2.5 px-3 text-right font-mono font-black text-emerald-400 text-sm bg-slate-900">
+                          <td className="py-2.5 px-3 text-right font-mono font-black text-amber-300 text-sm bg-slate-900">
                             {formatCurrency(liquidanteReal?.totalGeralDebitoLiquido || 0)}
+                          </td>
+                        </tr>
+                        <tr className="bg-slate-950 text-slate-300 border-t border-slate-800">
+                          <td colSpan={10} className="py-2 px-3 text-right uppercase font-bold text-xs text-slate-400">
+                            + Saldo Principal Vincendo (A Vencer - {liquidanteReal?.qtdVincendas || 0} parcelas):
+                          </td>
+                          <td className="py-2 px-3 text-right font-mono font-bold text-slate-200">
+                            +{formatCurrency(liquidanteReal?.saldoVincendo || 0)}
+                          </td>
+                        </tr>
+                        <tr className="bg-slate-900 text-white border-t-2 border-emerald-500/60">
+                          <td colSpan={10} className="py-3 px-3 text-right uppercase font-black text-xs text-emerald-300">
+                            Liquidação Total do Contrato (Débito Vencido + Saldo Vincendo):
+                          </td>
+                          <td className="py-3 px-3 text-right font-mono font-black text-emerald-400 text-base bg-slate-950">
+                            {formatCurrency(liquidanteReal?.totalLiquidacaoContrato || 0)}
                           </td>
                         </tr>
                       </tfoot>
@@ -1237,15 +1266,15 @@ Manual de Crédito Rural (MCR - Banco Central) e Resoluções do CMN.
                         const rows = atrasosGridMensal.map(m => [
                           m.mesAno,
                           m.isFuturo ? "Projetado" : "Apurado",
-                          m.saldoInicial.toFixed(2),
-                          m.amortizacaoDevida.toFixed(2),
-                          m.pagamentoEfetuado.toFixed(2),
-                          m.valorInadimplidoNovo.toFixed(2),
-                          m.principalInadimplidoAcumulado.toFixed(2),
-                          m.correcaoMonetaria.toFixed(2),
-                          m.multaMoratoria.toFixed(2),
-                          m.jurosMora.toFixed(2),
-                          m.saldoFinal.toFixed(2)
+                          formatCSVNumber(m.saldoInicial),
+                          formatCSVNumber(m.amortizacaoDevida),
+                          formatCSVNumber(m.pagamentoEfetuado),
+                          formatCSVNumber(m.valorInadimplidoNovo),
+                          formatCSVNumber(m.principalInadimplidoAcumulado),
+                          formatCSVNumber(m.correcaoMonetaria),
+                          formatCSVNumber(m.multaMoratoria),
+                          formatCSVNumber(m.jurosMora),
+                          formatCSVNumber(m.saldoFinal)
                         ]);
                         const csv = "\uFEFF" + [headers.join(";"), ...rows.map(r => r.join(";"))].join("\n");
                         const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });

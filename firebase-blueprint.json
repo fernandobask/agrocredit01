@@ -14,12 +14,30 @@
         "updatedAt": { "type": "string", "format": "date-time" }
       },
       "required": ["userId", "name", "contrato", "cenarios", "createdAt", "updatedAt"]
+    },
+    "Proposal": {
+      "title": "Proposal",
+      "description": "A saved negotiation proposal",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "userId": { "type": "string" },
+        "contratoNumero": { "type": "string" },
+        "emitente": { "type": "string" },
+        "proposalData": { "type": "object" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "userId", "contratoNumero", "emitente", "proposalData", "createdAt"]
     }
   },
   "firestore": {
     "simulations/{simulationId}": {
       "schema": { "$ref": "#/entities/Simulation" },
       "description": "User saved simulations"
+    },
+    "propostas_negociacao/{proposalId}": {
+      "schema": { "$ref": "#/entities/Proposal" },
+      "description": "User saved negotiation proposals"
     }
   }
 }

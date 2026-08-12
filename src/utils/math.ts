@@ -176,6 +176,12 @@ export function calcularProjecaoMensal(
   return mensalGrid;
 }
 
+// Formats numbers with comma decimal separator for PT-BR Excel compatibility
+export function formatCSVNumber(value: number | undefined | null, decimals: number = 2): string {
+  if (value === undefined || value === null || isNaN(value)) return "0," + "0".repeat(decimals);
+  return value.toFixed(decimals).replace(".", ",");
+}
+
 // Export monthly breakdown to CSV (Excel compatible)
 export function exportMensalToCSV(mensalGrid: ProjecaoMensal[], contrato: Contrato, indexadorNome: string): string {
   let csv = "\uFEFF"; // UTF-8 BOM
@@ -184,14 +190,14 @@ export function exportMensalToCSV(mensalGrid: ProjecaoMensal[], contrato: Contra
   csv += `Contrato Nº;${contrato.numero}\n`;
   csv += `Emitente / Devedor;${contrato.emitente}\n`;
   csv += `Credor / Instituição;${contrato.credor}\n`;
-  csv += `Valor Principal;${contrato.valorPrincipal.toFixed(2)}\n`;
+  csv += `Valor Principal;${formatCSVNumber(contrato.valorPrincipal)}\n`;
   csv += `Indexador;${indexadorNome}\n\n`;
 
   csv += `Mês nº;Período Ref.;Início Período;Fim Período;Dias;Saldo Devedor Inicial (R$);Juros Taxa Fixa (R$);Juros Indexador (R$);Juros Total Mês (R$);Amortização Principal (R$);Fluxo Total Mês (R$);Saldo Devedor Final (R$);Evento / Parcela\n`;
 
   mensalGrid.forEach(m => {
     const eventoStr = m.isMesParcela ? `Vencimento Parcela #${m.numeroParcela || ''}` : "Acumulação Mensal";
-    csv += `${m.mesIndex};${m.anoMesStr};${formatDate(m.dataInicio)};${formatDate(m.dataFim)};${m.diasNoMes};${m.saldoDevedorInicial.toFixed(2)};${m.jurosSpreadMes.toFixed(2)};${m.jurosIndexadorMes.toFixed(2)};${m.jurosTotalMes.toFixed(2)};${m.amortizacaoMes.toFixed(2)};${m.totalFluxoMes.toFixed(2)};${m.saldoDevedorFinal.toFixed(2)};${eventoStr}\n`;
+    csv += `${m.mesIndex};${m.anoMesStr};${formatDate(m.dataInicio)};${formatDate(m.dataFim)};${m.diasNoMes};${formatCSVNumber(m.saldoDevedorInicial)};${formatCSVNumber(m.jurosSpreadMes)};${formatCSVNumber(m.jurosIndexadorMes)};${formatCSVNumber(m.jurosTotalMes)};${formatCSVNumber(m.amortizacaoMes)};${formatCSVNumber(m.totalFluxoMes)};${formatCSVNumber(m.saldoDevedorFinal)};${eventoStr}\n`;
   });
 
   return csv;
@@ -327,17 +333,17 @@ export function exportToCSV(cenarios: ResultadoCenario[], contrato: Contrato): s
   csv += `Contrato Nº;${contrato.numero}\n`;
   csv += `Emitente;${contrato.emitente}\n`;
   csv += `Credor;${contrato.credor}\n`;
-  csv += `Valor Principal;${contrato.valorPrincipal.toFixed(2)}\n`;
+  csv += `Valor Principal;${formatCSVNumber(contrato.valorPrincipal)}\n`;
   csv += `Data de Emissão;${formatDate(contrato.dataEmissao)}\n`;
   csv += `Data de Vencimento;${formatDate(contrato.dataVencimento)}\n`;
-  csv += `Taxa Original;${contrato.taxaJurosAnual}% a.a. + ${contrato.indexadorOriginal}\n\n`;
+  csv += `Taxa Original;${formatCSVNumber(contrato.taxaJurosAnual)}% a.a. + ${contrato.indexadorOriginal}\n\n`;
 
   // Scenarios Summary Table
   csv += `RESUMO DOS CENÁRIOS COMPARATIVOS\n`;
   csv += `Cenário;Indexador;Taxa Fixa/Spread;Total Amortizado (R$);Total Juros (R$);Custo Total Financeiro (R$);Economia Gerada (R$)\n`;
 
   cenarios.forEach(cen => {
-    csv += `${cen.nome};${cen.indexador};${cen.taxaJurosAnual.toFixed(2)}%;${cen.totalAmortizado.toFixed(2)};${cen.totalJuros.toFixed(2)};${cen.totalPago.toFixed(2)};${cen.economiaRelativa.toFixed(2)}\n`;
+    csv += `${cen.nome};${cen.indexador};${formatCSVNumber(cen.taxaJurosAnual)}%;${formatCSVNumber(cen.totalAmortizado)};${formatCSVNumber(cen.totalJuros)};${formatCSVNumber(cen.totalPago)};${formatCSVNumber(cen.economiaRelativa)}\n`;
   });
   csv += `\n\n`;
 
@@ -347,7 +353,7 @@ export function exportToCSV(cenarios: ResultadoCenario[], contrato: Contrato): s
     csv += `Parcela;Data Vencimento;% Amortizacao;Saldo Inicial (R$);Amortização (R$);Juros Indexador (R$);Juros Taxa Fixa (R$);Total Parcela (R$);Saldo Final (R$)\n`;
     
     cen.parcelas.forEach(p => {
-      csv += `${p.numero};${formatDate(p.data)};${p.percentualAmortizacao.toFixed(4)}%;${p.saldoDevedorInicial.toFixed(2)};${p.amortizacao.toFixed(2)};${p.jurosIndexador.toFixed(2)};${p.jurosSpread.toFixed(2)};${p.totalPago.toFixed(2)};${p.saldoDevedorFinal.toFixed(2)}\n`;
+      csv += `${p.numero};${formatDate(p.data)};${formatCSVNumber(p.percentualAmortizacao, 4)}%;${formatCSVNumber(p.saldoDevedorInicial)};${formatCSVNumber(p.amortizacao)};${formatCSVNumber(p.jurosIndexador)};${formatCSVNumber(p.jurosSpread)};${formatCSVNumber(p.totalPago)};${formatCSVNumber(p.saldoDevedorFinal)}\n`;
     });
     csv += `\n`;
   });
