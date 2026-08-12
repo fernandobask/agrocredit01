@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from "react";
+import React, { useState, useMemo, useEffect } from "react";
 import { 
   X, 
   Printer, 
@@ -15,7 +15,9 @@ import {
   ArrowRight,
   Sliders,
   Check,
-  FileSpreadsheet
+  FileSpreadsheet,
+  Edit3,
+  RotateCcw
 } from "lucide-react";
 import { formatCurrency, formatDate, parseDateSafely, formatCSVNumber } from "../utils/math";
 import { IndexadorRates } from "../types";
@@ -28,6 +30,96 @@ interface ResumoConsolidadoModalProps {
   indexadores: IndexadorRates;
   onToggleAtivo?: (simId: string, currentAtivo: boolean) => void;
 }
+
+// Inline Editable Currency Cell Component
+const EditableCurrencyCell: React.FC<{
+  value: number;
+  isModified: boolean;
+  onChange: (val: number) => void;
+  onReset?: () => void;
+  accentClass?: string;
+  bgClass?: string;
+  isHighlighted?: boolean;
+}> = ({ value, isModified, onChange, onReset, accentClass = "text-slate-900", bgClass = "bg-transparent", isHighlighted = false }) => {
+  const [isEditing, setIsEditing] = useState(false);
+  const [tempText, setTempText] = useState(value.toString());
+
+  useEffect(() => {
+    if (!isEditing) {
+      setTempText(value > 0 ? value.toFixed(2) : "0");
+    }
+  }, [value, isEditing]);
+
+  const handleBlur = () => {
+    setIsEditing(false);
+    const sanitized = tempText.replace(/\./g, "").replace(",", ".");
+    const parsed = parseFloat(sanitized);
+    if (!isNaN(parsed) && parsed >= 0) {
+      onChange(parsed);
+    } else {
+      setTempText(value.toString());
+    }
+  };
+
+  const handleKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === "Enter") {
+      handleBlur();
+    } else if (e.key === "Escape") {
+      setIsEditing(false);
+      setTempText(value.toString());
+    }
+  };
+
+  return (
+    <div className={`flex items-center justify-end gap-1 ${bgClass} p-1 rounded transition`}>
+      {isEditing ? (
+        <input
+          type="text"
+          autoFocus
+          value={tempText}
+          onChange={(e) => setTempText(e.target.value)}
+          onBlur={handleBlur}
+          onKeyDown={handleKeyDown}
+          className="w-28 text-right bg-white border-2 border-emerald-500 rounded px-1.5 py-0.5 text-xs font-mono font-bold text-slate-950 focus:outline-hidden shadow-inner"
+        />
+      ) : (
+        <div className="flex items-center gap-1 justify-end w-full">
+          {isModified && onReset && (
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                onReset();
+              }}
+              className="text-amber-500 hover:text-red-500 p-0.5 rounded transition cursor-pointer"
+              title="Restaurar valor padrão calculado"
+            >
+              <RotateCcw className="w-3 h-3" />
+            </button>
+          )}
+
+          <button
+            onClick={() => {
+              setTempText(value > 0 ? value.toFixed(2) : "0");
+              setIsEditing(true);
+            }}
+            className={`group flex items-center justify-end gap-1 text-right font-mono font-bold text-xs ${
+              isHighlighted ? 'text-white' : accentClass
+            } cursor-pointer hover:underline focus:outline-hidden`}
+            title="Clique para editar este valor manualmente"
+          >
+            {isModified && (
+              <span className="text-[9px] px-1 py-0.2 bg-amber-400 text-slate-950 font-black rounded uppercase tracking-tighter shrink-0">
+                Manual
+              </span>
+            )}
+            <span>{formatCurrency(value)}</span>
+            <Edit3 className="w-3 h-3 text-slate-400 opacity-0 group-hover:opacity-100 transition-opacity shrink-0" />
+          </button>
+        </div>
+      )}
+    </div>
+  );
+};
 
 export const ResumoConsolidadoModal: React.FC<ResumoConsolidadoModalProps> = ({
   isOpen,
@@ -73,6 +165,44 @@ export const ResumoConsolidadoModal: React.FC<ResumoConsolidadoModalProps> = ({
 
   // Set of highlighted contract IDs (pink/magenta highlight like in the Excel sheet)
   const [highlightedSimIds, setHighlightedSimIds] = useState<Set<string>>(new Set());
+
+  // Manual numeric overrides per contract row: { [simId]: { valorBanco?: number, valorRecalculado?: number, valorTerceiro?: number } }
+  const [manualOverrides, setManualOverrides] = useState<Record<string, { valorRecalculado?: number; valorBanco?: number; valorTerceiro?: number }>>({});
+
+  const handleUpdateManualValue = (simId: string, field: 'valorRecalculado' | 'valorBanco' | 'valorTerceiro', val: number) => {
+    setManualOverrides(prev => ({
+      ...prev,
+      [simId]: {
+        ...prev[simId],
+        [field]: isNaN(val) ? 0 : val
+      }
+    }));
+  };
+
+  const handleResetManualValue = (simId: string, field?: 'valorRecalculado' | 'valorBanco' | 'valorTerceiro') => {
+    setManualOverrides(prev => {
+      if (!prev[simId]) return prev;
+      const nextSim = { ...prev[simId] };
+      if (field) {
+        delete nextSim[field];
+      } else {
+        const nextAll = { ...prev };
+        delete nextAll[simId];
+        return nextAll;
+      }
+      
+      if (Object.keys(nextSim).length === 0) {
+        const nextAll = { ...prev };
+        delete nextAll[simId];
+        return nextAll;
+      }
+      return { ...prev, [simId]: nextSim };
+    });
+  };
+
+  const handleResetAllManualOverrides = () => {
+    setManualOverrides({});
+  };
 
   const toggleHighlight = (simId: string) => {
     setHighlightedSimIds(prev => {
@@ -151,18 +281,21 @@ export const ResumoConsolidadoModal: React.FC<ResumoConsolidadoModalProps> = ({
       });
 
       // 1. PROPOSTA DO CREDOR / BANCO (SICREDI DDC)
-      let valorBanco = 0;
+      let defaultValorBanco = 0;
       if (cData.valorEmissao && cData.valorEmissao > 0) {
-        valorBanco = cData.valorEmissao;
+        defaultValorBanco = cData.valorEmissao;
       } else {
         const years = 1;
         const taxa = (cData.taxaJurosAnual || 0) / 100;
-        valorBanco = (valorOriginal - valorLiquidado) * Math.pow(1 + taxa, years);
-        if (valorBanco < 0) valorBanco = 0;
+        defaultValorBanco = (valorOriginal - valorLiquidado) * Math.pow(1 + taxa, years);
+        if (defaultValorBanco < 0) defaultValorBanco = 0;
       }
 
+      const hasManualBanco = manualOverrides[sim.id]?.valorBanco !== undefined;
+      const valorBanco = hasManualBanco ? manualOverrides[sim.id].valorBanco! : defaultValorBanco;
+
       // 2. PROPOSTA DO ESPECIALISTA (RECALCULADO INPC / ÍNDICE SELECIONADO)
-      let valorRecalculado = 0;
+      let defaultValorRecalculado = 0;
       const cenarios = sim.scenariosData || sim.cenarios || [];
 
       if (selectedIndexador === "CENARIO_IA") {
@@ -170,12 +303,12 @@ export const ResumoConsolidadoModal: React.FC<ResumoConsolidadoModalProps> = ({
           const bestCen = cenarios[0];
           const proj = bestCen.parcelas || [];
           if (proj.length > 0) {
-            valorRecalculado = proj.reduce((acc: number, p: any) => acc + (p.totalPago || 0), 0);
+            defaultValorRecalculado = proj.reduce((acc: number, p: any) => acc + (p.totalPago || 0), 0);
           } else {
-            valorRecalculado = (bestCen.totalPago || bestCen.totalAmortizado || valorOriginal) * 0.85;
+            defaultValorRecalculado = (bestCen.totalPago || bestCen.totalAmortizado || valorOriginal) * 0.85;
           }
         } else {
-          valorRecalculado = Math.max(0, (valorOriginal - valorLiquidado) * 1.05);
+          defaultValorRecalculado = Math.max(0, (valorOriginal - valorLiquidado) * 1.05);
         }
       } else {
         // Find scenario matching selected indexer
@@ -184,7 +317,7 @@ export const ResumoConsolidadoModal: React.FC<ResumoConsolidadoModalProps> = ({
         );
 
         if (matchingCen && matchingCen.parcelas && matchingCen.parcelas.length > 0) {
-          valorRecalculado = matchingCen.parcelas.reduce((acc: number, p: any) => acc + (p.totalPago || 0), 0);
+          defaultValorRecalculado = matchingCen.parcelas.reduce((acc: number, p: any) => acc + (p.totalPago || 0), 0);
         } else {
           // Dynamic recalculation using indexer rate + legal agricultural interest
           const saldoLiquido = Math.max(0, valorOriginal - valorLiquidado);
@@ -209,20 +342,25 @@ export const ResumoConsolidadoModal: React.FC<ResumoConsolidadoModalProps> = ({
             }
           }
 
-          valorRecalculado = saldoLiquido * Math.pow(1 + totalRateAnnual, Math.min(years, 5));
+          defaultValorRecalculado = saldoLiquido * Math.pow(1 + totalRateAnnual, Math.min(years, 5));
         }
       }
 
+      const hasManualRecalculado = manualOverrides[sim.id]?.valorRecalculado !== undefined;
+      const valorRecalculado = hasManualRecalculado ? manualOverrides[sim.id].valorRecalculado! : defaultValorRecalculado;
+
       // 3. PROPOSTA DE TERCEIROS / PERITO (SANDRO RAUEN)
-      let valorTerceiro = 0;
+      let defaultValorTerceiro = 0;
       if (cData.valorTerceiro && cData.valorTerceiro > 0) {
-        valorTerceiro = cData.valorTerceiro;
+        defaultValorTerceiro = cData.valorTerceiro;
       } else if (cenarios.length > 1 && cenarios[1].totalPago) {
-        valorTerceiro = cenarios[1].totalPago;
+        defaultValorTerceiro = cenarios[1].totalPago;
       } else {
-        // Calculation matching third proposal / expert ratio (approx 1.15x of Especialista or contract rate + spread)
-        valorTerceiro = Math.max(valorBanco * 1.07, valorRecalculado * 1.12);
+        defaultValorTerceiro = Math.max(defaultValorBanco * 1.07, defaultValorRecalculado * 1.12);
       }
+
+      const hasManualTerceiro = manualOverrides[sim.id]?.valorTerceiro !== undefined;
+      const valorTerceiro = hasManualTerceiro ? manualOverrides[sim.id].valorTerceiro! : defaultValorTerceiro;
 
       // DIFERENÇAS DE COBRANÇA
       const diferencaBancoEspecialista = valorBanco - valorRecalculado;
@@ -239,6 +377,9 @@ export const ResumoConsolidadoModal: React.FC<ResumoConsolidadoModalProps> = ({
         valorBanco,
         valorRecalculado,
         valorTerceiro,
+        hasManualBanco,
+        hasManualRecalculado,
+        hasManualTerceiro,
         diferencaBancoEspecialista,
         diferencaTerceiroEspecialista,
         parcelasVencidas,
@@ -247,7 +388,7 @@ export const ResumoConsolidadoModal: React.FC<ResumoConsolidadoModalProps> = ({
         emitente: cData.emitente || "Emitente"
       };
     });
-  }, [filteredSimulations, selectedIndexador, indexadores]);
+  }, [filteredSimulations, selectedIndexador, indexadores, manualOverrides]);
 
   // Overall Total Calculations
   const totals = useMemo(() => {
@@ -327,6 +468,8 @@ export const ResumoConsolidadoModal: React.FC<ResumoConsolidadoModalProps> = ({
     ? ((totals.diferencaBancoEspecialista / totals.valorBanco) * 100).toFixed(1)
     : "0.0";
 
+  const totalManualOverridesCount = Object.keys(manualOverrides).length;
+
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-2 sm:p-4 bg-slate-900/60 backdrop-blur-md overflow-y-auto print:p-0 print:bg-white">
       <div className="bg-slate-50 border border-slate-200 rounded-2xl shadow-xl w-full max-w-7xl max-h-[94vh] flex flex-col overflow-hidden animate-fadeIn print:max-h-none print:shadow-none print:border-none print:rounded-none">
@@ -344,6 +487,12 @@ export const ResumoConsolidadoModal: React.FC<ResumoConsolidadoModalProps> = ({
               <span className="px-2 py-0.5 bg-slate-800 text-slate-300 text-xs font-medium rounded border border-slate-700">
                 {totals.countActive} de {totals.countTotal} operações ativas
               </span>
+              {totalManualOverridesCount > 0 && (
+                <span className="px-2 py-0.5 bg-amber-400/20 text-amber-300 text-xs font-bold rounded border border-amber-400/30 flex items-center gap-1">
+                  <Edit3 className="w-3 h-3 text-amber-400" />
+                  {totalManualOverridesCount} edições manuais
+                </span>
+              )}
             </div>
             <h2 className="text-base sm:text-lg md:text-xl font-bold uppercase tracking-tight text-white leading-tight">
               RESUMO CONSOLIDADO ÚNICO — {emitenteDisplay} x {credorDisplay}
@@ -353,7 +502,18 @@ export const ResumoConsolidadoModal: React.FC<ResumoConsolidadoModalProps> = ({
             </p>
           </div>
 
-          <div className="flex items-center gap-2 print:hidden shrink-0 self-end sm:self-auto">
+          <div className="flex items-center gap-2 print:hidden shrink-0 self-end sm:self-auto flex-wrap">
+            {totalManualOverridesCount > 0 && (
+              <button
+                onClick={handleResetAllManualOverrides}
+                className="px-2.5 py-1.5 bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 font-bold text-xs rounded-lg border border-amber-500/30 transition flex items-center gap-1.5 cursor-pointer"
+                title="Restaurar todos os valores calculados automaticamente"
+              >
+                <RotateCcw className="w-3.5 h-3.5 text-amber-400" />
+                <span>Resetar Manuais</span>
+              </button>
+            )}
+
             <button
               onClick={() => setShowColumnSettings(!showColumnSettings)}
               className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 font-semibold text-xs rounded-lg transition flex items-center gap-1.5 border border-slate-700 cursor-pointer"
@@ -533,7 +693,7 @@ export const ResumoConsolidadoModal: React.FC<ResumoConsolidadoModalProps> = ({
                     Resumo Comparativo de Propostas & Análise de Economia
                   </h3>
                   <p className="text-xs text-slate-500">
-                    Comparação direta entre as propostas do Especialista, do Banco e de Terceiros.
+                    Comparação direta entre as propostas do Especialista, do Banco e de Terceiros. Clique no nome ou nos valores para editá-los livremente.
                   </p>
                 </div>
               </div>
@@ -555,7 +715,13 @@ export const ResumoConsolidadoModal: React.FC<ResumoConsolidadoModalProps> = ({
                   Proposta Especialista
                 </div>
                 <div className="space-y-1">
-                  <span className="text-xs font-bold text-emerald-900 block">{nomeEspecialista}</span>
+                  <input
+                    type="text"
+                    value={nomeEspecialista}
+                    onChange={(e) => setNomeEspecialista(e.target.value)}
+                    className="text-xs font-bold text-emerald-950 bg-transparent border-b border-dashed border-emerald-400 focus:outline-hidden w-full"
+                    title="Clique para editar este título"
+                  />
                   <p className="text-xs text-emerald-700 leading-tight">
                     Índice: <strong>{selectedIndexador}</strong> + Juros Legais Agrícolas (8% a.a.)
                   </p>
@@ -582,7 +748,13 @@ export const ResumoConsolidadoModal: React.FC<ResumoConsolidadoModalProps> = ({
                   Cobrança do Banco
                 </div>
                 <div className="space-y-1">
-                  <span className="text-xs font-bold text-rose-950 block">{nomeBanco}</span>
+                  <input
+                    type="text"
+                    value={nomeBanco}
+                    onChange={(e) => setNomeBanco(e.target.value)}
+                    className="text-xs font-bold text-rose-950 bg-transparent border-b border-dashed border-rose-400 focus:outline-hidden w-full"
+                    title="Clique para editar este título"
+                  />
                   <p className="text-xs text-rose-800 leading-tight">
                     Cobrança exigida pelo Banco com encargos do contrato original.
                   </p>
@@ -609,7 +781,13 @@ export const ResumoConsolidadoModal: React.FC<ResumoConsolidadoModalProps> = ({
                   Parecer de Terceiros
                 </div>
                 <div className="space-y-1">
-                  <span className="text-xs font-bold text-indigo-950 block">{nomeTerceiro}</span>
+                  <input
+                    type="text"
+                    value={nomeTerceiro}
+                    onChange={(e) => setNomeTerceiro(e.target.value)}
+                    className="text-xs font-bold text-indigo-950 bg-transparent border-b border-dashed border-indigo-400 focus:outline-hidden w-full"
+                    title="Clique para editar este título"
+                  />
                   <p className="text-xs text-indigo-800 leading-tight">
                     Avaliação/parecer técnico alternativo de terceiros.
                   </p>
@@ -636,7 +814,7 @@ export const ResumoConsolidadoModal: React.FC<ResumoConsolidadoModalProps> = ({
             <div className="bg-slate-50 border border-slate-200 rounded-xl p-3 text-xs text-slate-700 flex flex-col sm:flex-row items-start sm:items-center gap-2">
               <Info className="w-4 h-4 text-emerald-600 shrink-0 mt-0.5 sm:mt-0" />
               <p className="leading-relaxed">
-                <strong>Explicação das Colunas:</strong> A proposta do <strong>Especialista ({nomeEspecialista})</strong> aplica o recálculo do saldo devedor ajustado por índice legal e teto rural. A proposta do <strong>Banco ({nomeBanco})</strong> reflete a dívida cobrada pela instituição. A proposta de <strong>Terceiro ({nomeTerceiro})</strong> traz o parecer pericial externo para benchmarking de repactuação.
+                <strong>Dica de Edição:</strong> Os nomes dos cabeçalhos das colunas (ex: <em>{nomeBanco}</em> e <em>{nomeTerceiro}</em>) e os valores de cada contrato podem ser **editados diretamente** na tabela abaixo ou nos campos acima. As economias e totais são recalculados em tempo real.
               </p>
             </div>
 
@@ -659,30 +837,60 @@ export const ResumoConsolidadoModal: React.FC<ResumoConsolidadoModalProps> = ({
                     <th className="p-3 text-right border-r border-slate-200">Parcelas a Vencer (R$)</th>
 
                     {/* PROPOSAL 1: ESPECIALISTA (INPC) */}
-                    <th className="p-3 text-right border-r border-slate-200 bg-emerald-100/80 text-emerald-950 font-black">
-                      <div className="flex flex-col items-end">
-                        <span className="truncate max-w-[130px]">{nomeEspecialista}</span>
-                        <span className="text-[9px] px-1.5 py-0.2 bg-emerald-600 text-white font-bold rounded tracking-wide uppercase mt-0.5">
+                    <th className="p-2 text-right border-r border-slate-200 bg-emerald-100/80 text-emerald-950 font-black min-w-[170px]">
+                      <div className="flex flex-col items-end gap-1">
+                        <div className="flex items-center gap-1 bg-white/80 border border-emerald-300 rounded px-1.5 py-0.5 shadow-2xs">
+                          <Edit3 className="w-3 h-3 text-emerald-700 opacity-80 shrink-0" />
+                          <input
+                            type="text"
+                            value={nomeEspecialista}
+                            onChange={(e) => setNomeEspecialista(e.target.value)}
+                            className="text-right bg-transparent font-black text-xs text-emerald-950 focus:outline-hidden w-36"
+                            title="Clique para editar o nome da coluna do Especialista"
+                            placeholder="Recalculado INPC"
+                          />
+                        </div>
+                        <span className="text-[9px] px-1.5 py-0.2 bg-emerald-600 text-white font-bold rounded tracking-wide uppercase">
                           Especialista ({selectedIndexador})
                         </span>
                       </div>
                     </th>
 
                     {/* PROPOSAL 2: BANCO (SICREDI DDC) */}
-                    <th className="p-3 text-right border-r border-slate-200 bg-rose-100/80 text-rose-950 font-black">
-                      <div className="flex flex-col items-end">
-                        <span className="truncate max-w-[130px]">{nomeBanco}</span>
-                        <span className="text-[9px] px-1.5 py-0.2 bg-rose-600 text-white font-bold rounded tracking-wide uppercase mt-0.5">
+                    <th className="p-2 text-right border-r border-slate-200 bg-rose-100/80 text-rose-950 font-black min-w-[170px]">
+                      <div className="flex flex-col items-end gap-1">
+                        <div className="flex items-center gap-1 bg-white/80 border border-rose-300 rounded px-1.5 py-0.5 shadow-2xs">
+                          <Edit3 className="w-3 h-3 text-rose-700 opacity-80 shrink-0" />
+                          <input
+                            type="text"
+                            value={nomeBanco}
+                            onChange={(e) => setNomeBanco(e.target.value)}
+                            className="text-right bg-transparent font-black text-xs text-rose-950 focus:outline-hidden w-36"
+                            title="Clique para editar o nome da coluna do Banco (ex: SICREDI DDC)"
+                            placeholder="SICREDI DDC"
+                          />
+                        </div>
+                        <span className="text-[9px] px-1.5 py-0.2 bg-rose-600 text-white font-bold rounded tracking-wide uppercase">
                           Cobrança Banco
                         </span>
                       </div>
                     </th>
 
                     {/* PROPOSAL 3: TERCEIRO (SANDRO RAUEN) */}
-                    <th className="p-3 text-right border-r border-slate-200 bg-indigo-100/80 text-indigo-950 font-black">
-                      <div className="flex flex-col items-end">
-                        <span className="truncate max-w-[130px]">{nomeTerceiro}</span>
-                        <span className="text-[9px] px-1.5 py-0.2 bg-indigo-600 text-white font-bold rounded tracking-wide uppercase mt-0.5">
+                    <th className="p-2 text-right border-r border-slate-200 bg-indigo-100/80 text-indigo-950 font-black min-w-[170px]">
+                      <div className="flex flex-col items-end gap-1">
+                        <div className="flex items-center gap-1 bg-white/80 border border-indigo-300 rounded px-1.5 py-0.5 shadow-2xs">
+                          <Edit3 className="w-3 h-3 text-indigo-700 opacity-80 shrink-0" />
+                          <input
+                            type="text"
+                            value={nomeTerceiro}
+                            onChange={(e) => setNomeTerceiro(e.target.value)}
+                            className="text-right bg-transparent font-black text-xs text-indigo-950 focus:outline-hidden w-36"
+                            title="Clique para editar o nome da coluna de Terceiro (ex: SANDRO RAUEN)"
+                            placeholder="SANDRO RAUEN"
+                          />
+                        </div>
+                        <span className="text-[9px] px-1.5 py-0.2 bg-indigo-600 text-white font-bold rounded tracking-wide uppercase">
                           Perícia Terceiros
                         </span>
                       </div>
@@ -757,25 +965,46 @@ export const ResumoConsolidadoModal: React.FC<ResumoConsolidadoModalProps> = ({
                             {formatCurrency(row.parcelasAVencer)}
                           </td>
 
-                          {/* 1. Recalculado INPC (PROPOSTA / Especialista) */}
-                          <td className={`p-3 text-right font-mono font-bold border-r border-slate-200 whitespace-nowrap ${
-                            isHighlighted ? 'text-white' : 'text-emerald-900 bg-emerald-50/70'
+                          {/* 1. Recalculado INPC (PROPOSTA / Especialista) EDITÁVEL */}
+                          <td className={`p-2 text-right border-r border-slate-200 whitespace-nowrap ${
+                            isHighlighted ? 'bg-fuchsia-600' : 'bg-emerald-50/70'
                           }`}>
-                            {formatCurrency(row.valorRecalculado)}
+                            <EditableCurrencyCell
+                              value={row.valorRecalculado}
+                              isModified={row.hasManualRecalculado}
+                              onChange={(val) => handleUpdateManualValue(row.simId, 'valorRecalculado', val)}
+                              onReset={row.hasManualRecalculado ? () => handleResetManualValue(row.simId, 'valorRecalculado') : undefined}
+                              accentClass="text-emerald-950"
+                              isHighlighted={isHighlighted}
+                            />
                           </td>
 
-                          {/* 2. SICREDI DDC (Banco) */}
-                          <td className={`p-3 text-right font-mono font-bold border-r border-slate-200 whitespace-nowrap ${
-                            isHighlighted ? 'text-white' : 'text-rose-900 bg-rose-50/50'
+                          {/* 2. SICREDI DDC (Banco) EDITÁVEL */}
+                          <td className={`p-2 text-right border-r border-slate-200 whitespace-nowrap ${
+                            isHighlighted ? 'bg-fuchsia-600' : 'bg-rose-50/50'
                           }`}>
-                            {formatCurrency(row.valorBanco)}
+                            <EditableCurrencyCell
+                              value={row.valorBanco}
+                              isModified={row.hasManualBanco}
+                              onChange={(val) => handleUpdateManualValue(row.simId, 'valorBanco', val)}
+                              onReset={row.hasManualBanco ? () => handleResetManualValue(row.simId, 'valorBanco') : undefined}
+                              accentClass="text-rose-950"
+                              isHighlighted={isHighlighted}
+                            />
                           </td>
 
-                          {/* 3. SANDRO RAUEN (Terceiro / Perito) */}
-                          <td className={`p-3 text-right font-mono font-bold border-r border-slate-200 whitespace-nowrap ${
-                            isHighlighted ? 'text-white' : 'text-indigo-900 bg-indigo-50/50'
+                          {/* 3. SANDRO RAUEN (Terceiro / Perito) EDITÁVEL */}
+                          <td className={`p-2 text-right border-r border-slate-200 whitespace-nowrap ${
+                            isHighlighted ? 'bg-fuchsia-600' : 'bg-indigo-50/50'
                           }`}>
-                            {formatCurrency(row.valorTerceiro)}
+                            <EditableCurrencyCell
+                              value={row.valorTerceiro}
+                              isModified={row.hasManualTerceiro}
+                              onChange={(val) => handleUpdateManualValue(row.simId, 'valorTerceiro', val)}
+                              onReset={row.hasManualTerceiro ? () => handleResetManualValue(row.simId, 'valorTerceiro') : undefined}
+                              accentClass="text-indigo-950"
+                              isHighlighted={isHighlighted}
+                            />
                           </td>
 
                           {/* Diferença (Economia Especialista vs Banco) */}
@@ -910,4 +1139,3 @@ export const ResumoConsolidadoModal: React.FC<ResumoConsolidadoModalProps> = ({
     </div>
   );
 };
-
