@@ -28,6 +28,26 @@
         "createdAt": { "type": "string", "format": "date-time" }
       },
       "required": ["id", "userId", "contratoNumero", "emitente", "proposalData", "createdAt"]
+    },
+    "QueueTask": {
+      "title": "QueueTask",
+      "description": "A scheduled document processing task in the queue",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "simulationId": { "type": "string" },
+        "contractNumber": { "type": "string" },
+        "status": { "type": "string", "enum": ["pendente", "processando", "concluido", "erro"] },
+        "driveFileId": { "type": "string" },
+        "driveFileName": { "type": "string" },
+        "driveMimeType": { "type": "string" },
+        "auxiliaryFiles": { "type": "array" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" },
+        "userId": { "type": "string" },
+        "errorMessage": { "type": "string" }
+      },
+      "required": ["simulationId", "contractNumber", "status", "createdAt", "updatedAt"]
     }
   },
   "firestore": {
@@ -38,6 +58,10 @@
     "propostas_negociacao/{proposalId}": {
       "schema": { "$ref": "#/entities/Proposal" },
       "description": "User saved negotiation proposals"
+    },
+    "fila_processamento/{taskId}": {
+      "schema": { "$ref": "#/entities/QueueTask" },
+      "description": "Firestore task queue for document analysis"
     }
   }
 }

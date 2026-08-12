@@ -52,7 +52,11 @@ import {
   LayoutList,
   LayoutGrid,
   Eye,
-  EyeOff
+  EyeOff,
+  Eraser,
+  FilePlus,
+  CheckCircle2,
+  PowerOff
 } from "lucide-react";
 import { motion, AnimatePresence, useDragControls } from "motion/react";
 import {
@@ -96,9 +100,13 @@ import { SimuladorNegociacaoModal } from "./components/SimuladorNegociacaoModal"
 import { AuthModal } from "./components/AuthModal";
 import { TaxasManualModal } from "./components/TaxasManualModal";
 import { DocumentViewerModal } from "./components/DocumentViewerModal";
-import { auth, loginWithGoogle, loginAnonymously, checkRedirectLoginResult, logout, db, handleFirestoreError, OperationType, getAccessToken } from "./firebase";
+import { ResumoConsolidadoModal } from "./components/ResumoConsolidadoModal";
+import { LocalBatchModal } from "./components/LocalBatchModal";
+import { useQueueWorker } from "./hooks/useQueueWorker";
+import { enqueueDocAnalysisTask } from "./lib/queueService";
+import { auth, loginWithGoogle, loginAnonymously, loginAnonymouslyWithName, checkRedirectLoginResult, logout, db, handleFirestoreError, OperationType, getAccessToken, sanitizeFirestoreData } from "./firebase";
 import { onAuthStateChanged, User } from "firebase/auth";
-import { collection, doc, setDoc, getDocs, deleteDoc, query, where } from "firebase/firestore";
+import { collection, doc, setDoc, getDocs, deleteDoc, query, where, updateDoc } from "firebase/firestore";
 
 import ReactMarkdown from "react-markdown";
 
@@ -125,28 +133,6 @@ function GoogleIcon({ className = "w-4 h-4" }: { className?: string }) {
   );
 }
 
-function sanitizeFirestoreData(obj: any): any {
-  if (obj === null || obj === undefined) {
-    return null;
-  }
-  if (Array.isArray(obj)) {
-    return obj.map(item => sanitizeFirestoreData(item));
-  }
-  if (typeof obj === 'object') {
-    const cleaned: any = {};
-    for (const key in obj) {
-      if (Object.prototype.hasOwnProperty.call(obj, key)) {
-        const val = obj[key];
-        if (val !== undefined) {
-          cleaned[key] = sanitizeFirestoreData(val);
-        }
-      }
-    }
-    return cleaned;
-  }
-  return obj;
-}
-
 function normalizeContractNumber(num: string): string {
   return (num || "").toString().toLowerCase().replace(/[^a-z0-9]/g, "");
 }
@@ -156,7 +142,24 @@ function isDemoContract(num: string): boolean {
   return norm === "c205305764" || norm === "c305286451" || norm === "c30528645";
 }
 
-// Default preloaded contract data matching the user's provided CPR PDF
+// Blank contract template for initial state and manual reset
+const EMPTY_CONTRATO: Contrato = {
+  numero: "",
+  modalidade: ModalidadeContrato.CPR,
+  emitente: "",
+  credor: "",
+  dataEmissao: "",
+  dataVencimento: "",
+  valorPrincipal: 0,
+  taxaJurosAnual: 0,
+  indexadorOriginal: Indexador.CDI,
+  produto: "",
+  quantidade: "",
+  valorEmissao: 0,
+  cronogramaParcelas: []
+};
+
+// Default preloaded contract data matching the user's provided CPR PDF (accessible via Carregar CPR de Exemplo)
 const DEFAULT_CONTRATO: Contrato = {
   numero: "C20530576-4",
   modalidade: ModalidadeContrato.CPR,
@@ -234,8 +237,8 @@ const DEFAULT_CENARIOS: SimuloCenario[] = [
 ];
 
 export default function App() {
-  // Application State
-  const [contrato, setContrato] = useState<Contrato>(DEFAULT_CONTRATO);
+  // Application State - Starts with a blank/empty contract
+  const [contrato, setContrato] = useState<Contrato>(EMPTY_CONTRATO);
   const [cenarios, setCenarios] = useState<SimuloCenario[]>(DEFAULT_CENARIOS);
   const [dataHoje, setDataHoje] = useState<string>(() => {
     const today = new Date();
@@ -577,6 +580,38 @@ export default function App() {
 
   const [viewingDocument, setViewingDocument] = useState<AssociatedDocument | null>(null);
 
+  // States for Resumo Consolidado por Cliente Modal
+  const [isResumoConsolidadoOpen, setIsResumoConsolidadoOpen] = useState<boolean>(false);
+  const [resumoConsolidadoEmitente, setResumoConsolidadoEmitente] = useState<string>("");
+
+  // State for Local Computer Batch Import Modal
+  const [isLocalBatchModalOpen, setIsLocalBatchModalOpen] = useState<boolean>(false);
+
+  // Background Queue Worker for Gemini Flash 3.6 processing
+  const queueWorker = useQueueWorker(true);
+
+  // Handler to toggle contract active/inactive status in Firestore
+  const handleToggleContractStatus = async (simId: string, currentStatus: boolean) => {
+    const newStatus = !currentStatus;
+    try {
+      setSavedSimulations(prev =>
+        prev.map(s => (s.id === simId ? { ...s, ativo: newStatus } : s))
+      );
+      if (db) {
+        await updateDoc(doc(db, "simulations", simId), {
+          ativo: newStatus,
+          updatedAt: new Date().toISOString()
+        });
+      }
+      showToast(`Contrato ${newStatus ? "ativado" : "desativado"} com sucesso!`, "success");
+    } catch (err: any) {
+      setSavedSimulations(prev =>
+        prev.map(s => (s.id === simId ? { ...s, ativo: currentStatus } : s))
+      );
+      handleFirestoreError(err, OperationType.UPDATE, `simulations/${simId}`);
+    }
+  };
+
   // Routine to sanitize database and merge duplicate contract records
   const handleMergeDuplicateContracts = async () => {
     if (!savedSimulations || savedSimulations.length === 0) {
@@ -696,28 +731,101 @@ export default function App() {
   } | null>(null);
 
   const fetchSavedSimulations = async () => {
-    if (!user) return;
+    let currentUser = user || auth.currentUser;
+    if (!currentUser) {
+      try {
+        const cred = await loginAnonymouslyWithName("Analista Financeiro");
+        currentUser = cred.user;
+        setUser(currentUser);
+      } catch (e) {
+        console.warn("Auto login error:", e);
+      }
+    }
+
     setLoadingSimulations(true);
     try {
       // Single unified database query for team/organization
       const q = query(collection(db, "simulations"));
       const snapshot = await getDocs(q);
-      const sims = snapshot.docs
-        .map(doc => ({ id: doc.id, ...doc.data() }))
-        .sort((a: any, b: any) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+      
+      let sims = snapshot.docs.map(docItem => {
+        const data = docItem.data();
+        const cData = data.contractData || data.contrato || DEFAULT_CONTRATO;
+        const sData = data.scenariosData || data.cenarios || DEFAULT_CENARIOS;
+        return {
+          id: docItem.id,
+          ...data,
+          contractData: cData,
+          contrato: cData,
+          scenariosData: sData,
+          cenarios: sData
+        };
+      });
+
+      // Auto-seed initial CPR contract if database is completely empty
+      if (sims.length === 0 && currentUser) {
+        const defaultSimData = {
+          userId: currentUser.uid,
+          createdById: currentUser.uid,
+          createdByName: currentUser.displayName || currentUser.email || "Analista Financeiro",
+          name: "Contrato CPR - Julinere Goulart Bentos",
+          version: 1,
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+          contractData: DEFAULT_CONTRATO,
+          contrato: DEFAULT_CONTRATO,
+          scenariosData: DEFAULT_CENARIOS,
+          cenarios: DEFAULT_CENARIOS,
+          history: [],
+          associatedDocuments: [],
+          auditLogs: [{
+            id: `audit-${Date.now()}`,
+            timestamp: new Date().toISOString(),
+            userName: currentUser.displayName || currentUser.email || "Analista Financeiro",
+            action: "Criado automaticamente (Base Inicial)"
+          }]
+        };
+
+        try {
+          const defaultDocRef = doc(db, "simulations", "cpr-julinere-default");
+          await setDoc(defaultDocRef, sanitizeFirestoreData(defaultSimData));
+          sims = [{ id: "cpr-julinere-default", ...defaultSimData }];
+        } catch (seedErr) {
+          console.warn("Erro ao semear contrato inicial:", seedErr);
+        }
+      }
+
+      const getTime = (val: any) => {
+        if (!val) return 0;
+        if (typeof val === 'string' || typeof val === 'number') return new Date(val).getTime();
+        if (val.toDate && typeof val.toDate === 'function') return val.toDate().getTime();
+        if (val.seconds) return val.seconds * 1000;
+        return 0;
+      };
+
+      sims.sort((a: any, b: any) => getTime(b.createdAt) - getTime(a.createdAt));
       setSavedSimulations(sims);
     } catch (err) {
-      handleFirestoreError(err, OperationType.LIST, "simulations");
+      console.error("Erro ao buscar simulações do Firestore:", err);
+      setSavedSimulations([{
+        id: "cpr-julinere-fallback",
+        name: "Contrato CPR - Julinere Goulart Bentos",
+        version: 1,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        contractData: DEFAULT_CONTRATO,
+        contrato: DEFAULT_CONTRATO,
+        scenariosData: DEFAULT_CENARIOS,
+        createdByName: "Analista Financeiro"
+      }]);
     } finally {
       setLoadingSimulations(false);
     }
   };
 
   useEffect(() => {
-    if (activeNav === "contratos") {
-      fetchSavedSimulations();
-    }
-  }, [activeNav, user]);
+    fetchSavedSimulations();
+  }, [user, activeNav]);
 
   // Contract Verification (Laudo)
   const [verifyingContract, setVerifyingContract] = useState(false);
@@ -806,8 +914,18 @@ export default function App() {
         showToast(`Login efetuado com sucesso! Bem-vindo(a), ${res.user.displayName || res.user.email}`, "success");
       }
     });
-    const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
-      setUser(currentUser);
+    const unsubscribe = onAuthStateChanged(auth, async (currentUser) => {
+      if (currentUser) {
+        setUser(currentUser);
+      } else {
+        try {
+          const cred = await loginAnonymouslyWithName("Analista Financeiro");
+          setUser(cred.user);
+        } catch (e) {
+          console.warn("Erro ao realizar login anônimo automático:", e);
+          setUser(null);
+        }
+      }
     });
     return () => unsubscribe();
   }, []);
@@ -1317,6 +1435,13 @@ export default function App() {
     }
   };
 
+  const handleClearContract = () => {
+    setContrato(EMPTY_CONTRATO);
+    setLoadedSimulationId(null);
+    setLaudo(null);
+    showToast("Tela limpa! Selecione um contrato em 'Contratos Salvos' ou envie um novo arquivo.", "info");
+  };
+
   const handleResolveKeepExisting = () => {
     if (!duplicateConflict) return;
     const { existingSim } = duplicateConflict;
@@ -1477,6 +1602,164 @@ export default function App() {
     }
   };
 
+  const renderAttachDocumentForm = (simId: string) => {
+    if (newDocForm?.simId !== simId) return null;
+
+    return (
+      <div className="bg-emerald-50/80 p-4 rounded-2xl border border-emerald-200 text-xs space-y-3 shadow-xs my-3 text-left">
+        <div className="flex items-center justify-between border-b border-emerald-200/80 pb-2">
+          <h5 className="font-bold text-emerald-950 text-xs flex items-center gap-1.5">
+            <UploadCloud className="w-4 h-4 text-emerald-600" />
+            Anexar Documento do Banco (DDC, Extrato, Planilha ou CPR)
+          </h5>
+          <span className="text-[10px] bg-emerald-100 text-emerald-800 font-bold px-2 py-0.5 rounded-full border border-emerald-200">
+            Leitura Inteligente com IA
+          </span>
+        </div>
+
+        {/* File Input & Selection Dropzone */}
+        <div className="space-y-1">
+          <label className="block text-[10px] font-bold text-slate-600 uppercase">
+            1. Selecionar Arquivo do Computador <span className="text-red-500">*</span>
+          </label>
+          
+          {newDocForm.fileName ? (
+            <div className="flex items-center justify-between p-2.5 bg-white rounded-xl border border-emerald-300 text-xs shadow-2xs">
+              <div className="flex items-center gap-2.5 overflow-hidden">
+                <div className="w-8 h-8 rounded-lg bg-emerald-100 text-emerald-700 flex items-center justify-center shrink-0">
+                  <FileText className="w-4.5 h-4.5" />
+                </div>
+                <div className="min-w-0">
+                  <p className="font-bold text-slate-800 truncate">{newDocForm.fileName}</p>
+                  <p className="text-[10px] text-emerald-600 font-semibold">Pronto para ser anexado e analisado com IA</p>
+                </div>
+              </div>
+              <label className="px-3 py-1.5 bg-slate-100 hover:bg-emerald-100 text-slate-700 hover:text-emerald-800 rounded-lg text-[11px] font-bold cursor-pointer transition border border-slate-200 shrink-0">
+                Alterar Arquivo
+                <input
+                  type="file"
+                  accept=".pdf,.png,.jpg,.jpeg,.doc,.docx,.xls,.xlsx,.txt"
+                  className="hidden"
+                  onChange={(e) => {
+                    const file = e.target.files?.[0];
+                    if (!file) return;
+                    const reader = new FileReader();
+                    reader.onload = (evt) => {
+                      const base64 = evt.target?.result as string;
+                      const cleanName = file.name.replace(/\.[^/.]+$/, "");
+                      setNewDocForm(prev => prev ? {
+                        ...prev,
+                        fileName: file.name,
+                        fileData: base64,
+                        mimeType: file.type || "application/pdf",
+                        name: prev.name || cleanName
+                      } : null);
+                    };
+                    reader.readAsDataURL(file);
+                  }}
+                />
+              </label>
+            </div>
+          ) : (
+            <label className="border-2 border-dashed border-emerald-300 hover:border-emerald-500 bg-white hover:bg-emerald-50/50 rounded-xl p-4 flex flex-col sm:flex-row items-center justify-center gap-2.5 cursor-pointer transition text-emerald-800 font-bold text-center group">
+              <UploadCloud className="w-5 h-5 text-emerald-600 shrink-0 group-hover:scale-110 transition-transform" />
+              <span>Clique aqui para escolher o documento (PDF, PNG, JPG ou Excel)</span>
+              <input
+                type="file"
+                accept=".pdf,.png,.jpg,.jpeg,.doc,.docx,.xls,.xlsx,.txt"
+                className="hidden"
+                onChange={(e) => {
+                  const file = e.target.files?.[0];
+                  if (!file) return;
+                  const reader = new FileReader();
+                  reader.onload = (evt) => {
+                    const base64 = evt.target?.result as string;
+                    const cleanName = file.name.replace(/\.[^/.]+$/, "");
+                    setNewDocForm(prev => prev ? {
+                      ...prev,
+                      fileName: file.name,
+                      fileData: base64,
+                      mimeType: file.type || "application/pdf",
+                      name: prev.name || cleanName
+                    } : null);
+                  };
+                  reader.readAsDataURL(file);
+                }}
+              />
+            </label>
+          )}
+        </div>
+
+        {/* Metadata Inputs */}
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          <div>
+            <label className="block text-[10px] font-bold text-slate-600 uppercase mb-1">
+              2. Nome de Identificação
+            </label>
+            <input
+              type="text"
+              placeholder="Ex: Demonstrativo de Saldo Devedor Sicredi"
+              value={newDocForm.name}
+              onChange={e => setNewDocForm({ ...newDocForm, name: e.target.value })}
+              className="w-full bg-white border border-slate-200 rounded-lg p-2 text-xs text-slate-800 font-medium focus:ring-2 focus:ring-emerald-500 focus:outline-hidden"
+            />
+          </div>
+          <div>
+            <label className="block text-[10px] font-bold text-slate-600 uppercase mb-1">
+              3. Tipo do Documento
+            </label>
+            <select
+              value={newDocForm.type}
+              onChange={e => setNewDocForm({ ...newDocForm, type: e.target.value })}
+              className="w-full bg-white border border-slate-200 rounded-lg p-2 text-xs text-slate-800 font-medium focus:ring-2 focus:ring-emerald-500 focus:outline-hidden"
+            >
+              <option value="Demonstrativo de Saldo Devedor">Demonstrativo de Saldo Devedor (DDC)</option>
+              <option value="Planilha de Evolução / Cálculo">Planilha de Evolução / Cálculo</option>
+              <option value="Notificação de Atraso / Cobrança">Notificação de Atraso / Cobrança</option>
+              <option value="Aditivo Contratual">Aditivo Contratual</option>
+              <option value="Laudo / Parecer Técnico">Laudo / Parecer Técnico</option>
+              <option value="Cédula / CPR">Cédula de Produto Rural (CPR)</option>
+              <option value="Outro">Outro Documento</option>
+            </select>
+          </div>
+        </div>
+
+        <div>
+          <label className="block text-[10px] font-bold text-slate-600 uppercase mb-1">
+            Observações / Notas (Opcional)
+          </label>
+          <input
+            type="text"
+            placeholder="Ex: Documento enviado pelo banco contendo valores amortizados e saldo em aberto"
+            value={newDocForm.notes || ""}
+            onChange={e => setNewDocForm({ ...newDocForm, notes: e.target.value })}
+            className="w-full bg-white border border-slate-200 rounded-lg p-2 text-xs text-slate-800 font-medium"
+          />
+        </div>
+
+        {/* Action Buttons */}
+        <div className="flex items-center justify-end gap-2 pt-2 border-t border-emerald-200/80">
+          <button
+            type="button"
+            onClick={() => setNewDocForm(null)}
+            className="px-3.5 py-1.5 bg-slate-200 hover:bg-slate-300 text-slate-700 rounded-lg text-xs font-bold transition cursor-pointer"
+          >
+            Cancelar
+          </button>
+          <button
+            type="button"
+            disabled={!newDocForm.fileData && !newDocForm.fileName}
+            onClick={() => handleAddAssociatedDocument(simId, newDocForm)}
+            className="px-4 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-xs font-bold transition flex items-center gap-1.5 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed shadow-xs"
+          >
+            <Sparkles className="w-3.5 h-3.5 text-amber-300 fill-amber-300" />
+            <span>Anexar e Processar com IA</span>
+          </button>
+        </div>
+      </div>
+    );
+  };
+
   const handleDeleteAssociatedDocument = async (simId: string, docId: string) => {
     showConfirm("Tem certeza que deseja remover este documento?", async () => {
       const sim = savedSimulations.find(s => s.id === simId);
@@ -1505,247 +1788,34 @@ export default function App() {
       return;
     }
 
+    const sim = savedSimulations.find(s => s.id === simId);
+    const contractNum = sim?.contractData?.numero || sim?.contrato?.numero || "C00000000-0";
+
     setAnalyzingDocId(docItem.id);
-    showToast("Gemini IA analisando documento auxiliar para complementar dados...", "info");
+    showToast("Análise agendada na fila de segundo plano do Firestore. Gemini Flash 3.6 atualizará em breve...", "info");
 
     try {
-      const response = await fetch("/api/analyze-contract", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
+      await enqueueDocAnalysisTask({
+        simulationId: simId,
+        contractNumber: contractNum,
+        docItem: {
+          id: docItem.id,
+          fileName: docItem.fileName || docItem.name || "Documento Auxiliar",
           fileData: docItem.fileData,
           mimeType: docItem.mimeType || "application/pdf",
-          fileName: docItem.fileName
-        })
+          type: docItem.type
+        },
+        userId: user?.uid,
+        userName: user?.displayName || "Analista",
+        userEmail: user?.email || undefined
       });
 
-      if (!response.ok) {
-        throw new Error("Falha ao analisar o documento com Gemini IA.");
-      }
-
-      const extractedData = await response.json();
-      
-      const sim = savedSimulations.find(s => s.id === simId);
-      if (!sim) {
-        throw new Error("Simulação não encontrada.");
-      }
-
-      const currentContract = sim.contractData || sim.contrato || contrato;
-      const mergedContract = { ...currentContract };
-
-      if (!mergedContract.numero || mergedContract.numero === "C00000000-0") {
-        if (extractedData.numero) mergedContract.numero = extractedData.numero;
-      }
-      if (!mergedContract.modalidade) {
-        if (extractedData.modalidade) mergedContract.modalidade = extractedData.modalidade;
-      }
-      if (!mergedContract.emitente || mergedContract.emitente === "Emitente Padrão") {
-        if (extractedData.emitente) mergedContract.emitente = extractedData.emitente;
-      }
-      if (!mergedContract.credor || mergedContract.credor === "Credor Padrão") {
-        if (extractedData.credor) mergedContract.credor = extractedData.credor;
-      }
-      if (!mergedContract.dataEmissao) {
-        if (extractedData.dataEmissao) mergedContract.dataEmissao = extractedData.dataEmissao;
-      }
-      if (!mergedContract.dataVencimento) {
-        if (extractedData.dataVencimento) mergedContract.dataVencimento = extractedData.dataVencimento;
-      }
-      if (!mergedContract.produto) {
-        if (extractedData.produto) mergedContract.produto = extractedData.produto;
-      }
-      if (!mergedContract.quantidade) {
-        if (extractedData.quantidade) mergedContract.quantidade = extractedData.quantidade;
-      }
-      if (!mergedContract.valorPrincipal || mergedContract.valorPrincipal === 100000) {
-        if (extractedData.valorPrincipal) mergedContract.valorPrincipal = Number(extractedData.valorPrincipal);
-      }
-      if (!mergedContract.valorEmissao) {
-        if (extractedData.valorEmissao) mergedContract.valorEmissao = Number(extractedData.valorEmissao);
-      }
-
-      const currentParcelas = [...(mergedContract.cronogramaParcelas || [])];
-      const extractedParcelas = extractedData.cronogramaParcelas || [];
-
-      let fillCount = 0;
-      let mergedParcelas = [];
-
-      if (currentParcelas.length === 0 && extractedParcelas.length > 0) {
-        mergedParcelas = extractedParcelas.map((ep: any) => {
-          fillCount += 5;
-          return {
-            data: ep.data || new Date().toISOString().split("T")[0],
-            paga: ep.paga !== undefined ? !!ep.paga : false,
-            valorPrincipalManual: undefined, // Never set/overwrite from auxiliary/additional documents
-            valorJurosManual: ep.valorJurosManual !== undefined ? Number(ep.valorJurosManual) : undefined,
-            valorCorrecaoManual: ep.valorCorrecaoManual !== undefined ? Number(ep.valorCorrecaoManual) : undefined,
-            valorOutrosManual: ep.valorOutrosManual !== undefined ? Number(ep.valorOutrosManual) : undefined,
-            valorIofManual: ep.valorIofManual !== undefined ? Number(ep.valorIofManual) : undefined,
-            valorSeguroManual: ep.valorSeguroManual !== undefined ? Number(ep.valorSeguroManual) : undefined,
-            valorTaxaRegistroManual: ep.valorTaxaRegistroManual !== undefined ? Number(ep.valorTaxaRegistroManual) : undefined,
-            valorAmortizadoPago: ep.valorAmortizadoPago !== undefined ? Number(ep.valorAmortizadoPago) : undefined
-          };
-        });
-      } else {
-        const normalizeDateStr = (dStr: string) => {
-          if (!dStr) return "";
-          const clean = dStr.split("T")[0].trim();
-          if (clean.includes("/")) {
-            const parts = clean.split("/");
-            if (parts.length === 3) {
-              const day = parts[0].padStart(2, '0');
-              const month = parts[1].padStart(2, '0');
-              const year = parts[2];
-              return `${year}-${month}-${day}`;
-            }
-          }
-          return clean;
-        };
-
-        mergedParcelas = currentParcelas.map((p, idx) => {
-          const matchedExtracted = extractedParcelas.find((ep: any) => {
-            if (!ep.data || !p.data) return false;
-            return normalizeDateStr(ep.data) === normalizeDateStr(p.data);
-          }) || extractedParcelas[idx];
-
-          if (matchedExtracted) {
-            // Create a brand new copy of the installment to ensure React state updates and Firestore saves work flawlessly!
-            const updatedP = { ...p };
-
-            // CRITICAL: Additional documents must NEVER overwrite or alter the contract's installment principal.
-            // If the current installment has the incorrect 920000.23 or similar values from previous runs, we reset it to undefined
-            // so that it calculates the correct contract principal (920000.00 and 460000.00).
-            if (updatedP.valorPrincipalManual === 920000.23 || updatedP.valorPrincipalManual === 459999.54) {
-              updatedP.valorPrincipalManual = undefined;
-            }
-
-            // Map and populate Amortization fields from DDC / Auxiliary document
-            if (matchedExtracted.percentualAmortizacao !== undefined && matchedExtracted.percentualAmortizacao !== null) {
-              const valPct = Number(matchedExtracted.percentualAmortizacao);
-              if (!isNaN(valPct) && valPct > 0) {
-                updatedP.percentualAmortizacao = valPct;
-                fillCount++;
-              }
-            }
-
-            if (matchedExtracted.valorPrincipalManual !== undefined && matchedExtracted.valorPrincipalManual !== null) {
-              const valPrinc = Number(matchedExtracted.valorPrincipalManual);
-              if (!isNaN(valPrinc) && valPrinc > 0) {
-                updatedP.valorPrincipalManual = valPrinc;
-                fillCount++;
-              }
-            }
-
-            // Map and populate valorAmortizadoPago (Amortizado¹ (Pago))
-            const extAmortizado = matchedExtracted.valorAmortizadoPago !== undefined ? Number(matchedExtracted.valorAmortizadoPago) : undefined;
-            if (extAmortizado !== undefined && extAmortizado > 0) {
-              updatedP.valorAmortizadoPago = extAmortizado;
-              updatedP.paga = true; // Automatically mark as paid since there is an amortized/paid value!
-              fillCount++;
-            } else {
-              if (matchedExtracted.paga !== undefined) {
-                updatedP.paga = !!matchedExtracted.paga;
-                fillCount++;
-              }
-              if (matchedExtracted.valorAmortizadoPago !== undefined) {
-                updatedP.valorAmortizadoPago = Number(matchedExtracted.valorAmortizadoPago);
-                fillCount++;
-              }
-            }
-
-            // UNCONDITIONALLY fill manual overrides from auxiliary document if they are provided,
-            // because the auxiliary document contains the actual historical/extracted values for these fields.
-            // But we guard against NaN to keep the data clean.
-            if (matchedExtracted.valorJurosManual !== undefined && matchedExtracted.valorJurosManual !== null) {
-              const val = Number(matchedExtracted.valorJurosManual);
-              if (!isNaN(val)) {
-                updatedP.valorJurosManual = val;
-                fillCount++;
-              }
-            }
-            if (matchedExtracted.valorCorrecaoManual !== undefined && matchedExtracted.valorCorrecaoManual !== null) {
-              const val = Number(matchedExtracted.valorCorrecaoManual);
-              if (!isNaN(val)) {
-                updatedP.valorCorrecaoManual = val;
-                fillCount++;
-              }
-            }
-            if (matchedExtracted.valorOutrosManual !== undefined && matchedExtracted.valorOutrosManual !== null) {
-              const val = Number(matchedExtracted.valorOutrosManual);
-              if (!isNaN(val)) {
-                updatedP.valorOutrosManual = val;
-                fillCount++;
-              }
-            }
-            if (matchedExtracted.valorIofManual !== undefined && matchedExtracted.valorIofManual !== null) {
-              const val = Number(matchedExtracted.valorIofManual);
-              if (!isNaN(val)) {
-                updatedP.valorIofManual = val;
-                fillCount++;
-              }
-            }
-            if (matchedExtracted.valorSeguroManual !== undefined && matchedExtracted.valorSeguroManual !== null) {
-              const val = Number(matchedExtracted.valorSeguroManual);
-              if (!isNaN(val)) {
-                updatedP.valorSeguroManual = val;
-                fillCount++;
-              }
-            }
-            if (matchedExtracted.valorTaxaRegistroManual !== undefined && matchedExtracted.valorTaxaRegistroManual !== null) {
-              const val = Number(matchedExtracted.valorTaxaRegistroManual);
-              if (!isNaN(val)) {
-                updatedP.valorTaxaRegistroManual = val;
-                fillCount++;
-              }
-            }
-
-            return updatedP;
-          }
-          return { ...p };
-        });
-
-        if (extractedParcelas.length > currentParcelas.length) {
-          for (let i = currentParcelas.length; i < extractedParcelas.length; i++) {
-            const ep = extractedParcelas[i];
-            mergedParcelas.push({
-              data: ep.data || new Date().toISOString().split("T")[0],
-              paga: ep.paga !== undefined ? !!ep.paga : false,
-              valorPrincipalManual: undefined, // Never set/overwrite from auxiliary/additional documents
-              valorJurosManual: ep.valorJurosManual !== undefined ? Number(ep.valorJurosManual) : undefined,
-              valorCorrecaoManual: ep.valorCorrecaoManual !== undefined ? Number(ep.valorCorrecaoManual) : undefined,
-              valorOutrosManual: ep.valorOutrosManual !== undefined ? Number(ep.valorOutrosManual) : undefined,
-              valorIofManual: ep.valorIofManual !== undefined ? Number(ep.valorIofManual) : undefined,
-              valorSeguroManual: ep.valorSeguroManual !== undefined ? Number(ep.valorSeguroManual) : undefined,
-              valorTaxaRegistroManual: ep.valorTaxaRegistroManual !== undefined ? Number(ep.valorTaxaRegistroManual) : undefined,
-              valorAmortizadoPago: ep.valorAmortizadoPago !== undefined ? Number(ep.valorAmortizadoPago) : undefined
-            });
-            fillCount += 5;
-          }
-        }
-      }
-
-      mergedContract.cronogramaParcelas = mergedParcelas;
-
-      const updatedSim = {
-        ...sim,
-        contractData: mergedContract,
-        contrato: mergedContract,
-        updatedAt: new Date().toISOString()
-      };
-
-      await setDoc(doc(db, "simulations", simId), sanitizeFirestoreData(updatedSim));
       await fetchSavedSimulations();
-
-      if (loadedSimulationId === simId || contrato.numero === mergedContract.numero) {
-        setContrato(mergedContract);
-      }
-
-      showToast(`Análise concluída! ${fillCount} campos de parcelas e dados contratuais preenchidos com sucesso!`, "success");
     } catch (err: any) {
-      console.error(err);
-      showToast("Erro durante a análise do documento auxiliar: " + err.message, "error");
+      console.error("Erro ao agendar análise do documento na fila:", err);
+      showToast("Erro ao agendar análise do documento: " + err.message, "error");
     } finally {
-      setAnalyzingDocId(null);
+      setTimeout(() => setAnalyzingDocId(null), 800);
     }
   };
 
@@ -2355,6 +2425,18 @@ export default function App() {
             </button>
 
             <button
+              onClick={() => {
+                setResumoConsolidadoEmitente(emitenteFilter || "");
+                setIsResumoConsolidadoOpen(true);
+              }}
+              title={!isSidebarOpen ? "Resumo Consolidado" : undefined}
+              className={`w-full p-2.5 rounded-lg flex items-center ${isSidebarOpen ? "gap-2.5" : "justify-center"} transition font-medium text-xs text-left cursor-pointer text-slate-400 hover:bg-slate-800/60 hover:text-white`}
+            >
+              <FileSpreadsheet className="w-4 h-4 text-emerald-400 shrink-0" />
+              {isSidebarOpen && <span className="whitespace-nowrap overflow-hidden">Resumo Consolidado</span>}
+            </button>
+
+            <button
               onClick={() => setActiveNav("indexadores")}
               title={!isSidebarOpen ? "Configurar Taxas" : undefined}
               className={`w-full p-2.5 rounded-lg flex items-center ${isSidebarOpen ? "gap-2.5" : "justify-center"} transition font-medium text-xs text-left cursor-pointer ${
@@ -2596,6 +2678,7 @@ export default function App() {
           {/* RENDER DYNAMIC NAVIGATION TABS INSTEAD OF SCROLLING */}
           {activeNav === "contratos" && (
             <motion.section 
+              key="nav-contratos-section"
               initial={{ opacity: 0, y: 15 }}
               animate={{ opacity: 1, y: 0 }}
               className="space-y-6"
@@ -2603,6 +2686,7 @@ export default function App() {
               {/* DUPLICATE CONFLICT WARNING & RESOLUTION */}
               {duplicateConflict && (
                 <motion.div
+                  key="duplicate-conflict-alert"
                   initial={{ opacity: 0, scale: 0.98 }}
                   animate={{ opacity: 1, scale: 1 }}
                   className="bg-amber-50 border border-amber-200 rounded-2xl p-6 shadow-md space-y-4"
@@ -2704,20 +2788,33 @@ export default function App() {
                     <div>
                       <div className="flex items-center gap-2">
                         <h3 className="font-bold text-slate-800 text-base">Extração e Análise Contratual com IA</h3>
-                        <span className="px-2 py-0.5 bg-emerald-50 text-emerald-700 text-[10px] font-bold rounded-full border border-emerald-200">Gemini 2.5 AI</span>
+                        <span className="px-2 py-0.5 bg-emerald-50 text-emerald-700 text-[10px] font-bold rounded-full border border-emerald-200">Gemini 3.6 Flash AI</span>
                       </div>
                       <p className="text-xs text-slate-500">Mapeie dados de Cédulas Rurais (CPR), DDCs e Planos de Renegociação em segundos.</p>
                     </div>
                   </div>
 
-                  <button
-                    onClick={handleLoadDemoContract}
-                    className="px-3.5 py-2 bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-200 rounded-xl font-bold text-xs transition-all flex items-center gap-2 shadow-xs cursor-pointer shrink-0 self-start sm:self-auto"
-                    title="Carregar Cédula de Produto Rural (CPR) modelo de demonstração para testes no simulador"
-                  >
-                    <Zap className="w-3.5 h-3.5 text-emerald-600 fill-emerald-600" />
-                    <span>Carregar CPR de Exemplo</span>
-                  </button>
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <button
+                      onClick={handleClearContract}
+                      className="px-3.5 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 border border-slate-300 rounded-xl font-bold text-xs transition-all flex items-center gap-1.5 shadow-xs cursor-pointer shrink-0"
+                      title="Limpar todos os dados da tela e iniciar um formulário em branco"
+                    >
+                      <Eraser className="w-3.5 h-3.5 text-slate-500" />
+                      <span>Limpar Tela (Em Branco)</span>
+                    </button>
+                    <button
+                      onClick={() => {
+                        setResumoConsolidadoEmitente(emitenteFilter || "");
+                        setIsResumoConsolidadoOpen(true);
+                      }}
+                      className="px-3.5 py-2 bg-emerald-900 hover:bg-emerald-800 text-white rounded-xl font-bold text-xs transition-all flex items-center gap-2 shadow-xs cursor-pointer shrink-0 border border-emerald-800"
+                      title="Abrir a planilha de Resumo Consolidado Único por cliente"
+                    >
+                      <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-300" />
+                      <span>Resumo Consolidado Único</span>
+                    </button>
+                  </div>
                 </div>
 
                 {/* Compact Split Action Area */}
@@ -2748,10 +2845,29 @@ export default function App() {
                       </div>
                     </div>
 
-                    <button className="px-3.5 py-1.5 bg-slate-900 text-white rounded-lg text-xs font-bold group-hover:bg-emerald-600 transition-colors shrink-0 shadow-xs flex items-center gap-1.5">
-                      <FileText className="w-3.5 h-3.5" />
-                      <span>Escolher Arquivo</span>
-                    </button>
+                    <div className="flex flex-wrap items-center gap-2 shrink-0">
+                      <button 
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setIsLocalBatchModalOpen(true);
+                        }}
+                        className="px-3.5 py-1.5 bg-emerald-700 hover:bg-emerald-800 text-white rounded-lg text-xs font-bold transition-colors shadow-2xs flex items-center gap-1.5 cursor-pointer"
+                        title="Importar pastas ou vários arquivos de contratos e DDCs do computador local"
+                      >
+                        <FolderOpen className="w-3.5 h-3.5 text-emerald-300" />
+                        <span>Importação em Lote Local (Pastas/Vários)</span>
+                      </button>
+
+                      <button 
+                        type="button"
+                        onClick={handleUploadClick}
+                        className="px-3.5 py-1.5 bg-slate-900 text-white rounded-lg text-xs font-bold group-hover:bg-emerald-600 transition-colors shadow-2xs flex items-center gap-1.5 cursor-pointer"
+                      >
+                        <FileText className="w-3.5 h-3.5" />
+                        <span>Escolher Arquivo</span>
+                      </button>
+                    </div>
                   </div>
 
                   {/* Format Indicators & Quick Adjustments */}
@@ -2782,6 +2898,7 @@ export default function App() {
                 <AnimatePresence>
                   {analyzing && (
                     <motion.div
+                      key="analyzing-banner-alert"
                       initial={{ opacity: 0, height: 0 }}
                       animate={{ opacity: 1, height: "auto" }}
                       exit={{ opacity: 0, height: 0 }}
@@ -2813,7 +2930,7 @@ export default function App() {
               </div>
 
               <div className="bg-white border border-slate-200 rounded-2xl p-6 shadow-sm space-y-6">
-                <div className="flex items-center justify-between pb-3 border-b border-slate-100">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-3 border-b border-slate-100">
                   <div className="flex items-center gap-3">
                     <div className="bg-emerald-500/10 p-2.5 rounded-xl text-emerald-600">
                       <Database className="w-6 h-6" />
@@ -3120,6 +3237,27 @@ export default function App() {
                                                       ({hasLogs ? sim.auditLogs.length : 0})
                                                     </button>
                                                     <button
+                                                      onClick={() => handleToggleContractStatus(sim.id, sim.ativo !== false)}
+                                                      className={`px-2 py-1.5 rounded-lg text-xs font-bold transition flex items-center gap-1 cursor-pointer border ${
+                                                        sim.ativo !== false
+                                                          ? "bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border-emerald-200"
+                                                          : "bg-amber-50 hover:bg-amber-100 text-amber-700 border-amber-200"
+                                                      }`}
+                                                      title={sim.ativo !== false ? "Contrato Ativo - Clique para desativar" : "Contrato Inativo - Clique para ativar"}
+                                                    >
+                                                      {sim.ativo !== false ? (
+                                                        <>
+                                                          <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />
+                                                          <span>Ativo</span>
+                                                        </>
+                                                      ) : (
+                                                        <>
+                                                          <PowerOff className="w-3.5 h-3.5 text-amber-500" />
+                                                          <span>Inativo</span>
+                                                        </>
+                                                      )}
+                                                    </button>
+                                                    <button
                                                       onClick={() => {
                                                         showConfirm("Deseja realmente remover esta simulação e todos os seus históricos?", async () => {
                                                           try {
@@ -3160,41 +3298,7 @@ export default function App() {
                                                           </button>
                                                         </div>
 
-                                                        {newDocForm?.simId === sim.id && (
-                                                          <div className="bg-white p-4 rounded-xl border border-slate-200 text-xs space-y-3">
-                                                            <h5 className="font-bold text-slate-700 text-xs">Anexar Novo Documento Técnico</h5>
-                                                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                                                              <div>
-                                                                <label className="block text-[10px] font-bold text-slate-500 uppercase mb-1">Nome do Documento</label>
-                                                                <input
-                                                                  type="text"
-                                                                  placeholder="Ex: Demonstrativo de Evolução da Dívida"
-                                                                  value={newDocForm.name}
-                                                                  onChange={e => setNewDocForm({ ...newDocForm, name: e.target.value })}
-                                                                  className="w-full bg-slate-50 border border-slate-200 rounded p-1.5 text-xs text-slate-800 font-medium"
-                                                                />
-                                                              </div>
-                                                              <div>
-                                                                <label className="block text-[10px] font-bold text-slate-500 uppercase mb-1">Tipo de Documento</label>
-                                                                <select
-                                                                  value={newDocForm.type}
-                                                                  onChange={e => setNewDocForm({ ...newDocForm, type: e.target.value })}
-                                                                  className="w-full bg-slate-50 border border-slate-200 rounded p-1.5 text-xs text-slate-800 font-medium"
-                                                                >
-                                                                  <option value="Demonstrativo de Saldo Devedor">Demonstrativo de Saldo Devedor</option>
-                                                                  <option value="Planilha de Evolução / Cálculo">Planilha de Evolução / Cálculo</option>
-                                                                  <option value="Notificação de Atraso / Cobrança">Notificação de Atraso / Cobrança</option>
-                                                                  <option value="Aditivo Contratual">Aditivo Contratual</option>
-                                                                  <option value="Laudo / Parecer Técnico">Laudo / Parecer Técnico</option>
-                                                                  <option value="Outro">Outro Documento</option>
-                                                                </select>
-                                                              </div>
-                                                            </div>
-                                                            <div className="flex justify-end gap-2 pt-1">
-                                                              <button onClick={() => setNewDocForm(null)} className="px-3 py-1 bg-slate-200 text-slate-600 rounded text-xs font-bold">Cancelar</button>
-                                                            </div>
-                                                          </div>
-                                                        )}
+                                                        {renderAttachDocumentForm(sim.id)}
 
                                                         <div className="space-y-2">
                                                           {sim.associatedDocuments && sim.associatedDocuments.length > 0 ? (
@@ -3348,6 +3452,27 @@ export default function App() {
                                           Logs ({hasLogs ? sim.auditLogs.length : 0})
                                         </button>
                                         <button
+                                          onClick={() => handleToggleContractStatus(sim.id, sim.ativo !== false)}
+                                          className={`px-3 py-1.5 rounded-lg text-xs font-bold transition flex items-center gap-1 cursor-pointer border ${
+                                            sim.ativo !== false
+                                              ? "bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border-emerald-200"
+                                              : "bg-amber-50 hover:bg-amber-100 text-amber-700 border-amber-200"
+                                          }`}
+                                          title={sim.ativo !== false ? "Contrato Ativo - Clique para desativar" : "Contrato Inativo - Clique para ativar"}
+                                        >
+                                          {sim.ativo !== false ? (
+                                            <>
+                                              <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />
+                                              <span>Ativo</span>
+                                            </>
+                                          ) : (
+                                            <>
+                                              <PowerOff className="w-3.5 h-3.5 text-amber-500" />
+                                              <span>Inativo</span>
+                                            </>
+                                          )}
+                                        </button>
+                                        <button
                                           onClick={() => {
                                             showConfirm("Deseja realmente remover esta simulação e todos os seus históricos?", async () => {
                                               try {
@@ -3365,6 +3490,94 @@ export default function App() {
                                           <Trash2 className="w-4 h-4" />
                                         </button>
                                       </div>
+
+                                      {(isDocsExpanded || isHistoryExpanded || isLogsExpanded) && (
+                                        <div className="pt-3 border-t border-slate-100 space-y-3">
+                                          {/* ASSOCIATED DOCUMENTS EXPANDED PANEL IN GRID */}
+                                          {isDocsExpanded && (
+                                            <div className="space-y-3">
+                                              <div className="flex justify-between items-center">
+                                                <h4 className="font-bold text-slate-800 text-xs uppercase tracking-wider flex items-center gap-1">
+                                                  <FolderOpen className="w-3.5 h-3.5 text-emerald-600" />
+                                                  Documentos Auxiliares do Banco
+                                                </h4>
+                                                <button
+                                                  onClick={() => setNewDocForm(newDocForm?.simId === sim.id ? null : { simId: sim.id, name: "", type: "Demonstrativo de Saldo Devedor", notes: "", fileName: "" })}
+                                                  className="px-2.5 py-1 bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 rounded-lg font-bold text-[11px] transition flex items-center gap-1 cursor-pointer"
+                                                >
+                                                  <Plus className="w-3 h-3" /> Anexar Documento do Banco
+                                                </button>
+                                              </div>
+
+                                              {renderAttachDocumentForm(sim.id)}
+
+                                              <div className="space-y-2">
+                                                {sim.associatedDocuments && sim.associatedDocuments.length > 0 ? (
+                                                  sim.associatedDocuments.map((docItem: AssociatedDocument) => (
+                                                    <div key={docItem.id} className="bg-slate-50 p-2.5 rounded-xl border border-slate-200 flex items-center justify-between text-xs shadow-2xs">
+                                                      <div className="flex items-center gap-2 min-w-0">
+                                                        <div className="w-7 h-7 rounded-lg bg-emerald-100 text-emerald-700 flex items-center justify-center shrink-0">
+                                                          <FileText className="w-3.5 h-3.5" />
+                                                        </div>
+                                                        <div className="min-w-0">
+                                                          <p className="font-bold text-slate-800 truncate">{docItem.name}</p>
+                                                          <p className="text-[10px] text-slate-400">{docItem.type} • {new Date(docItem.uploadDate).toLocaleDateString("pt-BR")}</p>
+                                                        </div>
+                                                      </div>
+                                                      <div className="flex items-center gap-1 shrink-0">
+                                                        <button 
+                                                          onClick={() => setViewingDocument(docItem)}
+                                                          className="px-2.5 py-1 bg-white hover:bg-emerald-50 text-emerald-700 font-bold rounded-lg border border-slate-200 text-[11px] transition flex items-center gap-1 cursor-pointer"
+                                                        >
+                                                          <Eye className="w-3 h-3" /> Abrir
+                                                        </button>
+                                                        <button 
+                                                          onClick={() => handleAnalyzeAndFill(sim.id, docItem)}
+                                                          disabled={analyzingDocId === docItem.id}
+                                                          className="px-2.5 py-1 bg-teal-50 hover:bg-teal-100 text-teal-700 font-bold rounded-lg text-[11px] transition flex items-center gap-1 cursor-pointer border border-teal-200 disabled:opacity-50"
+                                                        >
+                                                          <Sparkles className="w-3 h-3 text-amber-500" />
+                                                          {analyzingDocId === docItem.id ? "Extraindo..." : "Extrair IA"}
+                                                        </button>
+                                                        <button onClick={() => handleDeleteAssociatedDocument(sim.id, docItem.id)} className="text-slate-400 hover:text-red-500 p-1 cursor-pointer hover:bg-red-50 rounded-lg transition">
+                                                          <Trash2 className="w-3.5 h-3.5" />
+                                                        </button>
+                                                      </div>
+                                                    </div>
+                                                  ))
+                                                ) : (
+                                                  <p className="text-slate-400 text-xs italic bg-slate-50 p-2.5 rounded-xl border border-slate-200">Nenhum documento do banco anexado.</p>
+                                                )}
+                                              </div>
+                                            </div>
+                                          )}
+
+                                          {/* LOGS EXPANDED PANEL IN GRID */}
+                                          {isLogsExpanded && (
+                                            <div className="space-y-2">
+                                              <h4 className="font-bold text-slate-800 text-xs uppercase tracking-wider flex items-center gap-1">
+                                                <ShieldCheck className="w-3.5 h-3.5 text-emerald-600" /> Logs de Alteração & Operador
+                                              </h4>
+                                              <div className="space-y-2">
+                                                {hasLogs ? (
+                                                  sim.auditLogs.map((log: AuditLogEntry, idx: number) => (
+                                                    <div key={log.id || idx} className="bg-slate-50 p-2.5 rounded-lg border border-slate-200 text-xs">
+                                                      <div className="flex justify-between items-center font-bold text-slate-800">
+                                                        <span>{log.action}</span>
+                                                        <span className="text-[10px] text-slate-400 font-mono">{new Date(log.timestamp).toLocaleDateString("pt-BR")}</span>
+                                                      </div>
+                                                      <p className="text-[11px] text-slate-600 mt-0.5">{log.details}</p>
+                                                      <div className="text-[10px] text-emerald-700 font-semibold mt-1">Por: {log.userName} ({log.userEmail})</div>
+                                                    </div>
+                                                  ))
+                                                ) : (
+                                                  <p className="text-slate-400 text-xs italic">Nenhum log cadastrado.</p>
+                                                )}
+                                              </div>
+                                            </div>
+                                          )}
+                                        </div>
+                                      )}
                                     </div>
                                   );
                                 })}
@@ -3382,6 +3595,7 @@ export default function App() {
 
           {activeNav === "indexadores" && (
             <motion.section 
+              key="nav-indexadores-section"
               initial={{ opacity: 0, y: 15 }}
               animate={{ opacity: 1, y: 0 }}
               className="bg-white border border-slate-200 rounded-2xl p-6 shadow-sm space-y-6"
@@ -3628,12 +3842,12 @@ export default function App() {
 
                     {/* Pre-extracted Doc Banner */}
                     <div className="p-3.5 bg-slate-50 rounded-xl border border-dashed border-slate-200 flex items-center gap-3">
-                      <div className="w-10 h-10 bg-white rounded-lg flex items-center justify-center border shadow-sm text-red-500">
+                      <div className="w-10 h-10 bg-white rounded-lg flex items-center justify-center border shadow-sm text-red-500 shrink-0">
                         <FileText className="w-5 h-5" />
                       </div>
                       <div className="flex-1 min-w-0">
-                        <p className="text-xs font-bold text-slate-700 truncate">{contrato.numero || "Cedula_Rural.pdf"}</p>
-                        <p className="text-[10px] text-slate-500">Emitente: {contrato.emitente || "Carregado"}</p>
+                        <p className="text-xs font-bold text-slate-700 truncate">{contrato.numero ? `Cédula ${contrato.numero}` : "Sem Contrato Ativo"}</p>
+                        <p className="text-[10px] text-slate-500 truncate">Emitente: {contrato.emitente || "Aguardando seleção/upload"}</p>
                       </div>
                     </div>
 
@@ -3719,6 +3933,38 @@ export default function App() {
 
                 {/* RIGHT COLUMN: CONTRACT DETAILS & IA AUDIT REPORT (Col-Span-8) */}
                 <div className="lg:col-span-8 flex flex-col gap-6">
+
+                  {/* Notice when contract is blank */}
+                  {!contrato.numero && contrato.valorPrincipal === 0 && (
+                    <motion.div
+                      key="blank-contract-notice-card"
+                      initial={{ opacity: 0, y: -5 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      className="p-4 bg-amber-50/90 border border-amber-200/90 rounded-2xl flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 text-amber-900 text-xs shadow-xs"
+                    >
+                      <div className="flex items-center gap-3">
+                        <div className="w-9 h-9 rounded-xl bg-amber-100 text-amber-700 flex items-center justify-center shrink-0">
+                          <FolderOpen className="w-5 h-5" />
+                        </div>
+                        <div>
+                          <p className="font-bold text-amber-900 text-sm">Tela Inicial em Branco</p>
+                          <p className="text-amber-700 text-xs mt-0.5">
+                            Selecione um contrato na aba <strong>"Contratos Salvos"</strong> ou envie um arquivo PDF/Imagem na aba Contratos.
+                          </p>
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-2 shrink-0 self-stretch sm:self-auto justify-end">
+                        <button
+                          onClick={() => setActiveNav("contratos")}
+                          className="px-3.5 py-2 bg-amber-600 hover:bg-amber-700 text-white font-bold rounded-xl text-xs transition cursor-pointer flex items-center gap-1.5 shadow-xs"
+                        >
+                          <FolderOpen className="w-3.5 h-3.5" />
+                          <span>Contratos Salvos</span>
+                        </button>
+                      </div>
+                    </motion.div>
+                  )}
+
                   {/* CARD 1: CONTRACT PRINCIPAL DETAILS */}
                   <div className="bg-white border border-slate-200 rounded-2xl p-6 shadow-sm space-y-4">
                     <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-2 border-b border-slate-100">
@@ -3728,10 +3974,17 @@ export default function App() {
                       </div>
 
                       <div className="flex items-center gap-2">
-                        <span className="inline-flex items-center gap-1.5 px-3 py-1 bg-emerald-50 text-emerald-700 rounded-lg text-xs font-bold border border-emerald-200">
-                          <Check className="w-3.5 h-3.5 text-emerald-600 stroke-[3]" />
-                          <span>Contrato Ativo no Simulador</span>
-                        </span>
+                        {contrato.numero ? (
+                          <span className="inline-flex items-center gap-1.5 px-3 py-1 bg-emerald-50 text-emerald-700 rounded-lg text-xs font-bold border border-emerald-200">
+                            <Check className="w-3.5 h-3.5 text-emerald-600 stroke-[3]" />
+                            <span>Contrato Ativo no Simulador</span>
+                          </span>
+                        ) : (
+                          <span className="inline-flex items-center gap-1.5 px-3 py-1 bg-amber-50 text-amber-700 rounded-lg text-xs font-bold border border-amber-200">
+                            <AlertCircle className="w-3.5 h-3.5 text-amber-600" />
+                            <span>Tela em Branco</span>
+                          </span>
+                        )}
                       </div>
                     </div>
 
@@ -4770,6 +5023,7 @@ export default function App() {
                                   <AnimatePresence initial={false}>
                                     {isExpanded && (
                                       <motion.div
+                                        key={`accordion-panel-${idx}`}
                                         initial={{ height: 0, opacity: 0 }}
                                         animate={{ height: "auto", opacity: 1 }}
                                         exit={{ height: 0, opacity: 0 }}
@@ -5283,6 +5537,7 @@ export default function App() {
       <AnimatePresence>
         {isChatOpen && (
           <motion.div 
+            key="floating-chat-window-panel"
             initial={{ opacity: 0, x: 20, scale: 0.95 }}
             animate={{ opacity: 1, x: 0, scale: 1 }}
             exit={{ opacity: 0, x: 20, scale: 0.95 }}
@@ -5427,6 +5682,7 @@ export default function App() {
       <AnimatePresence>
         {toast && (
           <motion.div
+            key={`toast-notification-${toast.type}-${toast.message.slice(0, 10)}`}
             initial={{ opacity: 0, y: 50, scale: 0.9 }}
             animate={{ opacity: 1, y: 0, scale: 1 }}
             exit={{ opacity: 0, y: 20, scale: 0.9 }}
@@ -5459,8 +5715,9 @@ export default function App() {
       {/* Confirmation Dialog Overlay (sandbox safe) */}
       <AnimatePresence>
         {confirmModal && (
-          <div className="fixed inset-0 z-[9998] flex items-center justify-center bg-slate-900/40 backdrop-blur-sm p-4">
+          <div key="confirm-dialog-overlay-backdrop" className="fixed inset-0 z-[9998] flex items-center justify-center bg-slate-900/40 backdrop-blur-sm p-4">
             <motion.div
+              key="confirm-dialog-card-box"
               initial={{ opacity: 0, scale: 0.95 }}
               animate={{ opacity: 1, scale: 1 }}
               exit={{ opacity: 0, scale: 0.95 }}
@@ -5555,6 +5812,25 @@ export default function App() {
           }
         }}
         isAnalyzing={analyzingDocId === viewingDocument?.id}
+      />
+
+      {/* Modal de Resumo Consolidado Único de Contratos por Cliente / Credor */}
+      <ResumoConsolidadoModal
+        isOpen={isResumoConsolidadoOpen}
+        onClose={() => setIsResumoConsolidadoOpen(false)}
+        simulations={savedSimulations}
+        initialEmitente={resumoConsolidadoEmitente}
+        indexadores={indexadores}
+        onToggleAtivo={handleToggleContractStatus}
+      />
+
+      {/* Modal de Importação em Lote do Computador Local */}
+      <LocalBatchModal
+        isOpen={isLocalBatchModalOpen}
+        onClose={() => setIsLocalBatchModalOpen(false)}
+        user={user}
+        onComplete={fetchSavedSimulations}
+        showToast={showToast}
       />
     </div>
   );

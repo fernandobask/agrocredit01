@@ -18,6 +18,7 @@ const app = initializeApp(firebaseConfig);
 export const db = getFirestore(app, (firebaseConfig as any).firestoreDatabaseId);
 export const auth = getAuth(app);
 export const googleProvider = new GoogleAuthProvider();
+googleProvider.addScope('https://www.googleapis.com/auth/drive.readonly');
 googleProvider.addScope('https://www.googleapis.com/auth/drive.file');
 
 let cachedAccessToken: string | null = null;
@@ -69,7 +70,7 @@ export const loginWithGoogle = async () => {
     if (credential?.accessToken) {
       cachedAccessToken = credential.accessToken;
     }
-    return result;
+    return { user: result.user, accessToken: credential?.accessToken || cachedAccessToken, credential, userCredential: result };
   } catch (error: any) {
     console.warn("Erro no login Google Popup:", error);
     throw error;
@@ -118,6 +119,23 @@ export interface FirestoreErrorInfo {
     emailVerified?: boolean | null;
     isAnonymous?: boolean | null;
   }
+}
+
+export function sanitizeFirestoreData(obj: any): any {
+  if (obj === null || obj === undefined) return null;
+  if (typeof obj !== 'object') return obj;
+  if (obj instanceof Date) return obj.toISOString();
+  if (Array.isArray(obj)) {
+    return obj.map(item => sanitizeFirestoreData(item));
+  }
+  const cleaned: Record<string, any> = {};
+  for (const key of Object.keys(obj)) {
+    const val = obj[key];
+    if (val !== undefined) {
+      cleaned[key] = sanitizeFirestoreData(val);
+    }
+  }
+  return cleaned;
 }
 
 export function handleFirestoreError(error: unknown, operationType: OperationType, path: string | null) {

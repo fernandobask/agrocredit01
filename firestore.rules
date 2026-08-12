@@ -58,5 +58,25 @@ service cloud.firestore {
 
       allow delete: if isSignedIn();
     }
+
+    function isValidQueueTask(data) {
+      return data.keys().hasAll(['simulationId', 'status', 'createdAt', 'updatedAt'])
+        && data.simulationId is string
+        && data.status is string
+        && data.createdAt is string
+        && data.updatedAt is string;
+    }
+
+    match /fila_processamento/{taskId} {
+      allow read: if isSignedIn();
+
+      allow create: if isSignedIn()
+        && isValidQueueTask(incoming());
+
+      allow update: if isSignedIn()
+        && isValidQueueTask(incoming());
+
+      allow delete: if isSignedIn();
+    }
   }
 }

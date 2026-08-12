@@ -32,8 +32,6 @@ export const TaxasManualModal: React.FC<TaxasManualModalProps> = ({
     }
   }, [isOpen, indexadores]);
 
-  if (!isOpen) return null;
-
   const handleChange = (key: keyof IndexadorRates, val: number) => {
     setLocalRates(prev => ({
       ...prev,
@@ -53,13 +51,15 @@ export const TaxasManualModal: React.FC<TaxasManualModalProps> = ({
 
   return (
     <AnimatePresence>
-      <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/70 backdrop-blur-xs">
-        <motion.div
-          initial={{ opacity: 0, scale: 0.95, y: 10 }}
-          animate={{ opacity: 1, scale: 1, y: 0 }}
-          exit={{ opacity: 0, scale: 0.95, y: 10 }}
-          className="bg-white rounded-2xl border border-slate-200 shadow-2xl w-full max-w-xl overflow-hidden flex flex-col max-h-[90vh]"
-        >
+      {isOpen && (
+        <div key="taxas-modal-backdrop" className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/70 backdrop-blur-xs">
+          <motion.div
+            key="taxas-modal-content"
+            initial={{ opacity: 0, scale: 0.95, y: 10 }}
+            animate={{ opacity: 1, scale: 1, y: 0 }}
+            exit={{ opacity: 0, scale: 0.95, y: 10 }}
+            className="bg-white rounded-2xl border border-slate-200 shadow-2xl w-full max-w-xl overflow-hidden flex flex-col max-h-[90vh]"
+          >
           {/* Header */}
           <div className="bg-slate-900 text-white p-5 flex items-center justify-between shrink-0">
             <div className="flex items-center gap-3">
@@ -248,6 +248,7 @@ export const TaxasManualModal: React.FC<TaxasManualModalProps> = ({
           </div>
         </motion.div>
       </div>
+      )}
     </AnimatePresence>
   );
 };

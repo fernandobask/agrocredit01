@@ -84,6 +84,8 @@ export interface IndexadorRates {
   INPC: number; // % p.a.
   TR: number; // % p.a.
   PRE: number; // % p.a. (0 por definição)
+  IGPM?: number; // % p.a.
+  [key: string]: number | undefined;
 }
 
 export interface SimuloCenario {

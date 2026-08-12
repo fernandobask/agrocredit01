@@ -579,9 +579,8 @@ export function SimuladorNegociacaoModal({
     ? rowVirtualizer.getTotalSize() - virtualRows[virtualRows.length - 1].end
     : 0;
 
-  if (!isOpen || !contrato) return null;
-
   const handleExportCSV = () => {
+    if (!contrato) return;
     const headers = ["Nº Parcela", "Vencimento", "Saldo Inicial (R$)", "Amortização (R$)", "Juros (R$)", "Reajuste (R$)", "Valor Parcela (R$)", "Saldo Final (R$)"];
     const rows = propostaCalculada.cronograma.map(p => [
       p.numero,
@@ -641,17 +640,20 @@ export function SimuladorNegociacaoModal({
   };
 
   return (
-    <div className={`fixed inset-0 z-[9990] flex items-center justify-center bg-slate-900/80 backdrop-blur-xs transition-all duration-200 ${isMaximized ? 'p-1 sm:p-2' : 'p-3 sm:p-4'}`}>
-      <motion.div
-        initial={{ opacity: 0, scale: 0.96, y: 10 }}
-        animate={{ opacity: 1, scale: 1, y: 0 }}
-        exit={{ opacity: 0, scale: 0.96, y: 10 }}
-        className={`bg-white border border-slate-200 rounded-2xl shadow-2xl flex flex-col overflow-hidden transition-all duration-200 ${
-          isMaximized 
-            ? 'w-[99vw] h-[98vh] max-w-none max-h-none' 
-            : 'w-full max-w-7xl h-[92vh] max-h-[94vh]'
-        }`}
-      >
+    <AnimatePresence>
+      {isOpen && contrato && (
+        <div key="simulador-modal-backdrop" className={`fixed inset-0 z-[9990] flex items-center justify-center bg-slate-900/80 backdrop-blur-xs transition-all duration-200 ${isMaximized ? 'p-1 sm:p-2' : 'p-3 sm:p-4'}`}>
+          <motion.div
+            key="simulador-modal-content"
+            initial={{ opacity: 0, scale: 0.96, y: 10 }}
+            animate={{ opacity: 1, scale: 1, y: 0 }}
+            exit={{ opacity: 0, scale: 0.96, y: 10 }}
+            className={`bg-white border border-slate-200 rounded-2xl shadow-2xl flex flex-col overflow-hidden transition-all duration-200 ${
+              isMaximized 
+                ? 'w-[99vw] h-[98vh] max-w-none max-h-none' 
+                : 'w-full max-w-7xl h-[92vh] max-h-[94vh]'
+            }`}
+          >
         {/* MODAL HEADER */}
         <div className="p-4 sm:p-5 bg-gradient-to-r from-slate-900 via-slate-850 to-emerald-950 text-white flex flex-col sm:flex-row sm:items-center justify-between gap-4 shrink-0 shadow-md">
           <div className="flex items-center gap-3">
@@ -1610,5 +1612,7 @@ export function SimuladorNegociacaoModal({
         </div>
       </motion.div>
     </div>
+      )}
+    </AnimatePresence>
   );
 }
