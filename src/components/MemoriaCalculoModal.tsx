@@ -1,7 +1,7 @@
 import React, { useState, useMemo, useRef } from "react";
-import { X, Calculator, Copy, Check, Printer, ShieldCheck, Download, Search, Table, Layers, ArrowRight, Maximize2, Minimize2, AlertTriangle, AlertCircle, DollarSign, Calendar, FileText, CheckCircle2, RotateCcw, FileSpreadsheet, Edit3 } from "lucide-react";
+import { X, Calculator, Copy, Check, Printer, ShieldCheck, Download, Search, Table, Layers, ArrowRight, Maximize2, Minimize2, AlertTriangle, AlertCircle, DollarSign, Calendar, FileText, CheckCircle2, RotateCcw, FileSpreadsheet, Edit3, Eye } from "lucide-react";
 import { useVirtualizer } from "@tanstack/react-virtual";
-import { formatCurrency, formatDate, calcularProjecaoMensal, exportMensalToCSV, parseDateSafely, getDaysBetween, formatCSVNumber } from "../utils/math";
+import { formatCurrency, formatDate, calcularProjecaoMensal, exportMensalToCSV, exportAtrasosToCSV, parseDateSafely, getDaysBetween, formatCSVNumber } from "../utils/math";
 import { Contrato, ProjecaoParcela, Indexador, IndexadorRates, AssociatedDocument } from "../types";
 
 interface MemoriaCalculoModalProps {
@@ -16,6 +16,7 @@ interface MemoriaCalculoModalProps {
   dataBaseCalculo?: string;
   indexadorRates?: IndexadorRates;
   associatedDocuments?: AssociatedDocument[];
+  onViewDocument?: (doc: AssociatedDocument) => void;
 }
 
 export function MemoriaCalculoModal({
@@ -29,7 +30,8 @@ export function MemoriaCalculoModal({
   valorIndexadorAnual = 0,
   dataBaseCalculo = new Date().toISOString().split("T")[0],
   indexadorRates,
-  associatedDocuments = []
+  associatedDocuments = [],
+  onViewDocument
 }: MemoriaCalculoModalProps) {
   const [copied, setCopied] = useState(false);
   // Requested order: 1º Resumo & Fórmula, 2º Grade Mensal, 3º Cobrança Real de Atrasos ("A Bagaceira")
@@ -438,12 +440,22 @@ Manual de Crédito Rural (MCR - Banco Central) e Resoluções do CMN.
   };
 
   const handleExportCSV = () => {
-    const csvContent = exportMensalToCSV(mensalGrid, contrato, String(idxNome));
+    let csvContent = "";
+    let fileName = "";
+
+    if (activeStepTab === "atrasos" && liquidanteReal) {
+      csvContent = exportAtrasosToCSV(liquidanteReal, contrato, String(idxNome), taxaMultaPct, taxaMoraMesPct, dataBaseApuracao);
+      fileName = `Apuracao_Atrasos_Contrato_${contrato.numero || 'Simulacao'}.csv`;
+    } else {
+      csvContent = exportMensalToCSV(mensalGrid, contrato, String(idxNome));
+      fileName = `Memoria_Mensal_Contrato_${contrato.numero || 'Simulacao'}.csv`;
+    }
+
     const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
     link.setAttribute("href", url);
-    link.setAttribute("download", `Memoria_Mensal_Contrato_${contrato.numero || 'Simulacao'}.csv`);
+    link.setAttribute("download", fileName);
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
@@ -942,41 +954,80 @@ Manual de Crédito Rural (MCR - Banco Central) e Resoluções do CMN.
               
               {/* Top Consolidated Overdue Metrics Cards */}
               {liquidanteReal && (
-                <div className="grid grid-cols-2 lg:grid-cols-6 gap-2.5">
-                  <div className="bg-slate-50 border border-slate-200 rounded-xl p-3">
-                    <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Principal Vencido</span>
-                    <span className="text-sm font-extrabold text-slate-800">{formatCurrency(liquidanteReal.totalOriginalVencido)}</span>
-                    <span className="text-[10px] text-slate-500 block">{liquidanteReal.qtdVencidas} parcelas em atraso</span>
+                <div className="space-y-3">
+                  <div className="grid grid-cols-2 lg:grid-cols-6 gap-2.5">
+                    <div className="bg-slate-50 border border-slate-200 rounded-xl p-3">
+                      <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Principal Vencido</span>
+                      <span className="text-sm font-extrabold text-slate-800">{formatCurrency(liquidanteReal.totalOriginalVencido)}</span>
+                      <span className="text-[10px] text-slate-500 block">{liquidanteReal.qtdVencidas} parcelas em atraso</span>
+                    </div>
+
+                    <div className="bg-slate-50 border border-slate-200 rounded-xl p-3">
+                      <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Total Pago / Amortizado</span>
+                      <span className="text-sm font-extrabold text-emerald-700">{formatCurrency(liquidanteReal.totalPagoApurado)}</span>
+                      <span className="text-[10px] text-emerald-600 block">{liquidanteReal.qtdPagas} parcelas quitadas</span>
+                    </div>
+
+                    <div className="bg-slate-50 border border-slate-200 rounded-xl p-3">
+                      <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Correção ({idxNome})</span>
+                      <span className="text-sm font-extrabold text-slate-800">+{formatCurrency(liquidanteReal.totalCorrecao)}</span>
+                      <span className="text-[10px] text-slate-500 block">Atualização Monetária</span>
+                    </div>
+
+                    <div className="bg-slate-50 border border-slate-200 rounded-xl p-3">
+                      <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Multa & Mora</span>
+                      <span className="text-sm font-extrabold text-slate-800">+{formatCurrency(liquidanteReal.totalMulta + liquidanteReal.totalJurosMora)}</span>
+                      <span className="text-[10px] text-slate-500 block">{taxaMultaPct}% multa + {taxaMoraMesPct}%/m</span>
+                    </div>
+
+                    <div className="bg-slate-900 text-white rounded-xl p-3 shadow-xs border border-slate-800">
+                      <span className="text-[10px] font-bold text-amber-400 uppercase tracking-wider block">Débito Vencido em Aberto</span>
+                      <span className="text-sm font-extrabold text-amber-300">{formatCurrency(liquidanteReal.totalGeralDebitoLiquido)}</span>
+                      <span className="text-[10px] text-slate-400 block">Somente Parcelas Vencidas</span>
+                    </div>
+
+                    <div className="bg-slate-950 text-white rounded-xl p-3 shadow-sm border border-emerald-500/50">
+                      <span className="text-[10px] font-extrabold text-emerald-400 uppercase tracking-wider block">Liquidação Total Contrato</span>
+                      <span className="text-base font-black text-emerald-300">{formatCurrency(liquidanteReal.totalLiquidacaoContrato)}</span>
+                      <span className="text-[10px] text-slate-300 block">Vencido + Vincendo ({liquidanteReal.qtdVincendas}x)</span>
+                    </div>
                   </div>
 
-                  <div className="bg-slate-50 border border-slate-200 rounded-xl p-3">
-                    <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Total Pago / Amortizado</span>
-                    <span className="text-sm font-extrabold text-emerald-700">{formatCurrency(liquidanteReal.totalPagoApurado)}</span>
-                    <span className="text-[10px] text-emerald-600 block">{liquidanteReal.qtdPagas} parcelas quitadas</span>
-                  </div>
+                  {/* High Visibility Comparison Banner */}
+                  <div className="bg-gradient-to-r from-slate-900 via-slate-800 to-emerald-950 text-white p-3.5 rounded-xl shadow-sm border border-slate-700 grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div className="flex items-start gap-3 border-b md:border-b-0 md:border-r border-slate-700/80 pb-3 md:pb-0 md:pr-4">
+                      <div className="w-9 h-9 rounded-lg bg-amber-500/20 text-amber-400 border border-amber-500/30 flex items-center justify-center shrink-0 font-bold">
+                        1
+                      </div>
+                      <div className="space-y-0.5">
+                        <span className="text-[10px] font-bold text-amber-400 uppercase tracking-wider block">
+                          Liquidação Total do Débito em Aberto (Somente Vencido)
+                        </span>
+                        <div className="text-lg font-black text-amber-300 font-mono">
+                          {formatCurrency(liquidanteReal.totalGeralDebitoLiquido)}
+                        </div>
+                        <p className="text-[10px] text-slate-400 leading-tight">
+                          Valor das {liquidanteReal.qtdVencidas} parcelas vencidas + atualização ({idxNome}) + multa ({taxaMultaPct}%) + mora ({taxaMoraMesPct}%/m) até {formatDate(dataBaseApuracao)}.
+                        </p>
+                      </div>
+                    </div>
 
-                  <div className="bg-slate-50 border border-slate-200 rounded-xl p-3">
-                    <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Correção ({idxNome})</span>
-                    <span className="text-sm font-extrabold text-slate-800">+{formatCurrency(liquidanteReal.totalCorrecao)}</span>
-                    <span className="text-[10px] text-slate-500 block">Atualização Monetária</span>
-                  </div>
-
-                  <div className="bg-slate-50 border border-slate-200 rounded-xl p-3">
-                    <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Multa & Mora</span>
-                    <span className="text-sm font-extrabold text-slate-800">+{formatCurrency(liquidanteReal.totalMulta + liquidanteReal.totalJurosMora)}</span>
-                    <span className="text-[10px] text-slate-500 block">{taxaMultaPct}% multa + {taxaMoraMesPct}%/m</span>
-                  </div>
-
-                  <div className="bg-slate-900 text-white rounded-xl p-3 shadow-xs border border-slate-800">
-                    <span className="text-[10px] font-bold text-amber-400 uppercase tracking-wider block">Débito Vencido em Aberto</span>
-                    <span className="text-sm font-extrabold text-amber-300">{formatCurrency(liquidanteReal.totalGeralDebitoLiquido)}</span>
-                    <span className="text-[10px] text-slate-400 block">Vencido + Encargos + Honorários</span>
-                  </div>
-
-                  <div className="bg-slate-950 text-white rounded-xl p-3 shadow-sm border border-emerald-500/50">
-                    <span className="text-[10px] font-extrabold text-emerald-400 uppercase tracking-wider block">Liquidação Total Contrato</span>
-                    <span className="text-base font-black text-emerald-300">{formatCurrency(liquidanteReal.totalLiquidacaoContrato)}</span>
-                    <span className="text-[10px] text-slate-300 block">Vencido + Vincendo ({liquidanteReal.qtdVincendas}x)</span>
+                    <div className="flex items-start gap-3">
+                      <div className="w-9 h-9 rounded-lg bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 flex items-center justify-center shrink-0 font-bold">
+                        2
+                      </div>
+                      <div className="space-y-0.5">
+                        <span className="text-[10px] font-bold text-emerald-400 uppercase tracking-wider block">
+                          Liquidação Total do Contrato (Débito em Aberto + Saldo Vincendo)
+                        </span>
+                        <div className="text-xl font-black text-emerald-300 font-mono">
+                          {formatCurrency(liquidanteReal.totalLiquidacaoContrato)}
+                        </div>
+                        <p className="text-[10px] text-slate-300 leading-tight">
+                          Soma o débito em atraso ({formatCurrency(liquidanteReal.totalGeralDebitoLiquido)}) com o saldo principal a vencer ({formatCurrency(liquidanteReal.saldoVincendo)} das {liquidanteReal.qtdVincendas} parcelas vincendas).
+                        </p>
+                      </div>
+                    </div>
                   </div>
                 </div>
               )}
@@ -1411,18 +1462,29 @@ Manual de Crédito Rural (MCR - Banco Central) e Resoluções do CMN.
                   {associatedDocuments.length > 0 ? (
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                       {associatedDocuments.map((doc) => (
-                        <div key={doc.id} className="p-3 bg-slate-50 rounded-lg border border-slate-200 flex items-start gap-3">
-                          <div className="w-8 h-8 rounded bg-blue-100 text-blue-700 flex items-center justify-center font-bold shrink-0">
-                            <FileText className="w-4 h-4" />
-                          </div>
-                          <div className="space-y-0.5 text-xs">
-                            <h5 className="font-bold text-slate-800">{doc.name}</h5>
-                            <div className="flex items-center gap-2 text-[10px] text-slate-500">
-                              <span className="bg-slate-200 px-1 py-0.2 rounded font-mono uppercase">{doc.type}</span>
-                              {doc.uploadDate && <span>Data: {formatDate(doc.uploadDate)}</span>}
+                        <div key={doc.id} className="p-3 bg-slate-50 rounded-lg border border-slate-200 flex items-start justify-between gap-3">
+                          <div className="flex items-start gap-3 overflow-hidden">
+                            <div className="w-8 h-8 rounded bg-blue-100 text-blue-700 flex items-center justify-center font-bold shrink-0">
+                              <FileText className="w-4 h-4" />
                             </div>
-                            {doc.notes && <p className="text-[11px] text-slate-600 italic">{doc.notes}</p>}
+                            <div className="space-y-0.5 text-xs truncate">
+                              <h5 className="font-bold text-slate-800 truncate">{doc.name}</h5>
+                              <div className="flex items-center gap-2 text-[10px] text-slate-500">
+                                <span className="bg-slate-200 px-1 py-0.2 rounded font-mono uppercase">{doc.type}</span>
+                                {doc.uploadDate && <span>Data: {formatDate(doc.uploadDate)}</span>}
+                              </div>
+                              {doc.notes && <p className="text-[11px] text-slate-600 italic truncate">{doc.notes}</p>}
+                            </div>
                           </div>
+                          {onViewDocument && (
+                            <button
+                              onClick={() => onViewDocument(doc)}
+                              className="px-2.5 py-1 bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs rounded-lg transition flex items-center gap-1 shrink-0 cursor-pointer shadow-xs"
+                              title="Visualizar documento interno"
+                            >
+                              <Eye className="w-3.5 h-3.5" /> Abrir
+                            </button>
+                          )}
                         </div>
                       ))}
                     </div>

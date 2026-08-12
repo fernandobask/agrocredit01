@@ -47,7 +47,12 @@ import {
   ShieldCheck,
   UserCheck,
   Clock,
-  Edit3
+  Edit3,
+  Users,
+  LayoutList,
+  LayoutGrid,
+  Eye,
+  EyeOff
 } from "lucide-react";
 import { motion, AnimatePresence, useDragControls } from "motion/react";
 import {
@@ -90,6 +95,7 @@ import { MemoriaCalculoModal } from "./components/MemoriaCalculoModal";
 import { SimuladorNegociacaoModal } from "./components/SimuladorNegociacaoModal";
 import { AuthModal } from "./components/AuthModal";
 import { TaxasManualModal } from "./components/TaxasManualModal";
+import { DocumentViewerModal } from "./components/DocumentViewerModal";
 import { auth, loginWithGoogle, loginAnonymously, checkRedirectLoginResult, logout, db, handleFirestoreError, OperationType, getAccessToken } from "./firebase";
 import { onAuthStateChanged, User } from "firebase/auth";
 import { collection, doc, setDoc, getDocs, deleteDoc, query, where } from "firebase/firestore";
@@ -152,22 +158,69 @@ function isDemoContract(num: string): boolean {
 
 // Default preloaded contract data matching the user's provided CPR PDF
 const DEFAULT_CONTRATO: Contrato = {
-  numero: "C30528645-1",
+  numero: "C20530576-4",
+  modalidade: ModalidadeContrato.CPR,
   emitente: "JULINERE GOULART BENTOS",
-  credor: "SICREDI",
-  dataEmissao: "2023-08-31",
-  dataVencimento: "2028-08-15",
+  credor: "VALE DO CERRADO (SICREDI)",
+  dataEmissao: "2022-10-07",
+  dataVencimento: "2027-10-07",
   valorPrincipal: 2300000.00,
   taxaJurosAnual: 3.7, // 3.7% a.a. spread
   indexadorOriginal: Indexador.CDI,
-  produto: "MILHO EM GRÃO A GRANEL",
-  quantidade: "65545.74 SACA(S) DE 60 QUILOS",
+  produto: "SOJA A GRANEL",
+  quantidade: "14640.36 SACA(S) DE 60 QUILOS",
   valorEmissao: 2300000.00,
   cronogramaParcelas: [
-    { data: "2025-08-15", percentualAmortizacao: 25.00, paga: false },
-    { data: "2026-08-15", percentualAmortizacao: 25.00, paga: false },
-    { data: "2027-08-15", percentualAmortizacao: 25.00, paga: false },
-    { data: "2028-08-15", percentualAmortizacao: 25.00, paga: false }
+    {
+      data: "2023-10-07",
+      percentualAmortizacao: 20.00,
+      paga: true,
+      valorAmortizadoPago: 828700.13,
+      valorPrincipalManual: 460000.00,
+      valorJurosManual: 83290.00,
+      valorCorrecaoManual: 285410.13,
+      valorOutrosManual: 0.00
+    },
+    {
+      data: "2024-10-07",
+      percentualAmortizacao: 25.00,
+      paga: true,
+      valorAmortizadoPago: 813113.26,
+      valorPrincipalManual: 460000.00,
+      valorJurosManual: 99647.10,
+      valorCorrecaoManual: 238285.86,
+      valorOutrosManual: 15180.30
+    },
+    {
+      data: "2025-10-07",
+      percentualAmortizacao: 33.3333,
+      paga: false,
+      valorAmortizadoPago: 0.00,
+      valorPrincipalManual: 459999.54,
+      valorJurosManual: 39628.93,
+      valorCorrecaoManual: 127941.96,
+      valorOutrosManual: 0.00
+    },
+    {
+      data: "2026-10-07",
+      percentualAmortizacao: 50.00,
+      paga: false,
+      valorAmortizadoPago: 0.00,
+      valorPrincipalManual: 460000.23,
+      valorJurosManual: 0.00,
+      valorCorrecaoManual: 0.00,
+      valorOutrosManual: 0.00
+    },
+    {
+      data: "2027-10-07",
+      percentualAmortizacao: 100.00,
+      paga: false,
+      valorAmortizadoPago: 0.00,
+      valorPrincipalManual: 460000.23,
+      valorJurosManual: 0.00,
+      valorCorrecaoManual: 0.00,
+      valorOutrosManual: 0.00
+    }
   ]
 };
 
@@ -220,6 +273,7 @@ export default function App() {
   const [newCenarioIndexador, setNewCenarioIndexador] = useState<Indexador>(Indexador.INPC);
   const [newCenarioTaxa, setNewCenarioTaxa] = useState(2.0);
   const [activeTab, setActiveTab] = useState<"comparativo" | "fluxo">("comparativo");
+  const [showChart, setShowChart] = useState<boolean>(false);
   const [selectedFluxoCenario, setSelectedFluxoCenario] = useState<string>("original");
   const [expandedIndex, setExpandedIndex] = useState<number | null>(null);
   
@@ -371,6 +425,8 @@ export default function App() {
   const [savedSimulations, setSavedSimulations] = useState<any[]>([]);
   const [searchQuery, setSearchQuery] = useState("");
   const [emitenteFilter, setEmitenteFilter] = useState("");
+  const [contractScopeFilter, setContractScopeFilter] = useState<"all" | "mine">("all");
+  const [contractViewMode, setContractViewMode] = useState<"table" | "cards">("table");
   const [loadingSimulations, setLoadingSimulations] = useState(false);
   const [loadedSimulationId, setLoadedSimulationId] = useState<string | null>(null);
 
@@ -512,12 +568,118 @@ export default function App() {
     }
   }, [toast]);
 
-  // States for duplicate detection and versioning
+  // States for duplicate detection, document viewing and versioning
   const [duplicateConflict, setDuplicateConflict] = useState<{
     existingSim: any;
     novoContrato: Contrato;
     differences: string[];
   } | null>(null);
+
+  const [viewingDocument, setViewingDocument] = useState<AssociatedDocument | null>(null);
+
+  // Routine to sanitize database and merge duplicate contract records
+  const handleMergeDuplicateContracts = async () => {
+    if (!savedSimulations || savedSimulations.length === 0) {
+      showToast("Nenhuma simulação/contrato cadastrado para verificar duplicidades.", "info");
+      return;
+    }
+
+    const groups: { [key: string]: any[] } = {};
+    savedSimulations.forEach(sim => {
+      const cNum = normalizeContractNumber(sim.contractData?.numero || sim.contrato?.numero || "");
+      if (cNum && cNum !== "c000000000") {
+        if (!groups[cNum]) groups[cNum] = [];
+        groups[cNum].push(sim);
+      }
+    });
+
+    let duplicatesFound = 0;
+    const mergeOperations: { master: any; duplicatesToDelete: any[] }[] = [];
+
+    for (const normNum of Object.keys(groups)) {
+      const simList = groups[normNum];
+      if (simList.length > 1) {
+        duplicatesFound += (simList.length - 1);
+        
+        simList.sort((a, b) => {
+          const vA = a.version || 1;
+          const vB = b.version || 1;
+          if (vA !== vB) return vB - vA;
+          return new Date(b.updatedAt || 0).getTime() - new Date(a.updatedAt || 0).getTime();
+        });
+
+        const masterSim = simList[0];
+        const duplicatesToDelete = simList.slice(1);
+        mergeOperations.push({ master: masterSim, duplicatesToDelete });
+      }
+    }
+
+    if (duplicatesFound === 0) {
+      showToast("Nenhum contrato duplicado encontrado! Todos os registros estão higienizados.", "success");
+      return;
+    }
+
+    showConfirm(
+      `Foram identificados ${duplicatesFound} registro(s) duplicado(s) na base. Deseja unificar os documentos auxiliares, logs e histórico em um único registro e eliminar duplicidades?`,
+      async () => {
+        try {
+          for (const op of mergeOperations) {
+            const masterSim = op.master;
+            const duplicatesToDelete = op.duplicatesToDelete;
+
+            const allDocs = [...(masterSim.associatedDocuments || [])];
+            const allLogs = [...(masterSim.auditLogs || [])];
+            const allHistory = [...(masterSim.history || [])];
+
+            duplicatesToDelete.forEach(dup => {
+              if (dup.associatedDocuments && dup.associatedDocuments.length > 0) {
+                dup.associatedDocuments.forEach((docItem: any) => {
+                  if (!allDocs.some(d => d.id === docItem.id || d.fileName === docItem.fileName)) {
+                    allDocs.push(docItem);
+                  }
+                });
+              }
+              if (dup.auditLogs && dup.auditLogs.length > 0) {
+                dup.auditLogs.forEach((logItem: any) => {
+                  if (!allLogs.some(l => l.id === logItem.id)) {
+                    allLogs.push(logItem);
+                  }
+                });
+              }
+            });
+
+            allLogs.push({
+              id: `log_${Date.now()}`,
+              timestamp: new Date().toISOString(),
+              userId: user?.uid || "system",
+              userName: user?.displayName || "Analista Auditor",
+              userEmail: user?.email || "auditor@agro.com",
+              action: "Sanitização de Duplicados",
+              details: `Unificados ${duplicatesToDelete.length + 1} registros duplicados do contrato nº ${masterSim.contractData?.numero || "S/N"}`
+            });
+
+            const updatedMaster = {
+              ...masterSim,
+              associatedDocuments: allDocs,
+              auditLogs: allLogs,
+              history: allHistory,
+              updatedAt: new Date().toISOString()
+            };
+
+            await setDoc(doc(db, "simulations", masterSim.id), sanitizeFirestoreData(updatedMaster));
+            for (const dupToDelete of duplicatesToDelete) {
+              await deleteDoc(doc(db, "simulations", dupToDelete.id));
+            }
+          }
+
+          await fetchSavedSimulations();
+          showToast(`Higienização concluída com sucesso! ${duplicatesFound} duplicidade(s) removida(s).`, "success");
+        } catch (err) {
+          handleFirestoreError(err, OperationType.UPDATE, "simulations");
+        }
+      }
+    );
+  };
 
   // Track which saved simulation has its associated documents expanded
   const [expandedDocsSimId, setExpandedDocsSimId] = useState<string | null>(null);
@@ -537,7 +699,8 @@ export default function App() {
     if (!user) return;
     setLoadingSimulations(true);
     try {
-      const q = query(collection(db, "simulations"), where("userId", "==", user.uid));
+      // Single unified database query for team/organization
+      const q = query(collection(db, "simulations"));
       const snapshot = await getDocs(q);
       const sims = snapshot.docs
         .map(doc => ({ id: doc.id, ...doc.data() }))
@@ -708,15 +871,14 @@ export default function App() {
     setSaving(true);
     try {
       const isEditing = !!loadedSimulationId;
-      const currentNum = contrato.numero?.trim()?.toLowerCase();
+      const normNum = normalizeContractNumber(contrato.numero || "");
 
-      // Duplicate contract check if saving new
-      if (!isEditing && currentNum) {
-        const duplicateSim = savedSimulations.find(s => 
-          (s.contractData?.numero?.trim()?.toLowerCase() === currentNum ||
-           s.contrato?.numero?.trim()?.toLowerCase() === currentNum) &&
-          s.id !== loadedSimulationId
-        );
+      // Duplicate contract check safeguard
+      if (normNum) {
+        const duplicateSim = savedSimulations.find(s => {
+          const sNum = normalizeContractNumber(s.contractData?.numero || s.contrato?.numero || "");
+          return sNum !== "" && sNum === normNum && s.id !== loadedSimulationId;
+        });
         
         if (duplicateSim) {
           const existingContrato = duplicateSim.contractData || duplicateSim.contrato;
@@ -740,7 +902,7 @@ export default function App() {
             differences: diffs
           });
           setActiveNav("dashboard");
-          showToast(`Atenção: O contrato nº ${contrato.numero} já consta no banco de dados do sistema!`, "info");
+          showToast(`Trava de Segurança: O contrato nº ${contrato.numero} já consta cadastrado no sistema!`, "info");
           setSaving(false);
           return;
         }
@@ -1305,6 +1467,11 @@ export default function App() {
       await fetchSavedSimulations();
       setNewDocForm(null);
       showToast("Documento associado com sucesso!", "success");
+      
+      // Automatically analyze document with Gemini and auto-fill contract data
+      if (newDoc.fileData) {
+        await handleAnalyzeAndFill(simId, newDoc);
+      }
     } catch (err) {
       handleFirestoreError(err, OperationType.UPDATE, `simulations/${simId}`);
     }
@@ -1452,6 +1619,23 @@ export default function App() {
               updatedP.valorPrincipalManual = undefined;
             }
 
+            // Map and populate Amortization fields from DDC / Auxiliary document
+            if (matchedExtracted.percentualAmortizacao !== undefined && matchedExtracted.percentualAmortizacao !== null) {
+              const valPct = Number(matchedExtracted.percentualAmortizacao);
+              if (!isNaN(valPct) && valPct > 0) {
+                updatedP.percentualAmortizacao = valPct;
+                fillCount++;
+              }
+            }
+
+            if (matchedExtracted.valorPrincipalManual !== undefined && matchedExtracted.valorPrincipalManual !== null) {
+              const valPrinc = Number(matchedExtracted.valorPrincipalManual);
+              if (!isNaN(valPrinc) && valPrinc > 0) {
+                updatedP.valorPrincipalManual = valPrinc;
+                fillCount++;
+              }
+            }
+
             // Map and populate valorAmortizadoPago (Amortizado¹ (Pago))
             const extAmortizado = matchedExtracted.valorAmortizadoPago !== undefined ? Number(matchedExtracted.valorAmortizadoPago) : undefined;
             if (extAmortizado !== undefined && extAmortizado > 0) {
@@ -1552,7 +1736,7 @@ export default function App() {
       await setDoc(doc(db, "simulations", simId), sanitizeFirestoreData(updatedSim));
       await fetchSavedSimulations();
 
-      if (loadedSimulationId === simId) {
+      if (loadedSimulationId === simId || contrato.numero === mergedContract.numero) {
         setContrato(mergedContract);
       }
 
@@ -2359,10 +2543,10 @@ export default function App() {
             <button
               onClick={() => setTaxasModalOpen(true)}
               className="px-3.5 py-2 bg-slate-100 hover:bg-slate-200 text-slate-800 border border-slate-300 rounded-xl text-xs font-bold transition flex items-center gap-1.5 cursor-pointer shadow-xs"
-              title="Abrir painel de ajuste manual de taxas e indexadores"
+              title="Abrir painel de atualização manual de taxas e indexadores"
             >
-              <Coins className="w-4 h-4 text-emerald-600" />
-              <span>Ajustar Taxas</span>
+              <RefreshCw className="w-4 h-4 text-emerald-600" />
+              <span>Atualizar Taxas (Manual)</span>
             </button>
             <button
               onClick={() => setSimuladorModalOpen(true)}
@@ -2703,14 +2887,37 @@ export default function App() {
 
                       return (
                         <>
-                          <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                          {/* TEAM UNIFIED DATABASE INFO BANNER */}
+                          <div className="bg-emerald-50/80 border border-emerald-200/90 rounded-xl p-3 flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 text-xs">
+                            <div className="flex items-center gap-2">
+                              <Users className="w-4 h-4 text-emerald-700 shrink-0" />
+                              <span className="text-emerald-950 font-medium">
+                                <strong className="font-bold">Base Única Compartilhada:</strong> Exibindo contratos cadastrados por toda a equipe (Laura e demais analistas).
+                              </span>
+                            </div>
+                            <div className="flex items-center gap-2 shrink-0 self-start sm:self-auto">
+                              <button
+                                onClick={handleMergeDuplicateContracts}
+                                className="px-2.5 py-1 bg-amber-50 hover:bg-amber-100 text-amber-800 border border-amber-300 rounded-lg text-[11px] font-bold transition flex items-center gap-1 cursor-pointer shadow-2xs"
+                                title="Analisar e unificar contratos e documentos duplicados na base"
+                              >
+                                <ShieldCheck className="w-3.5 h-3.5 text-amber-600" />
+                                <span>Limpar Duplicados</span>
+                              </button>
+                              <span className="text-[11px] font-bold text-emerald-800 bg-emerald-100/80 px-2.5 py-1 rounded-lg border border-emerald-200">
+                                {savedSimulations.length} {savedSimulations.length === 1 ? 'Contrato Registrado' : 'Contratos Registrados'}
+                              </span>
+                            </div>
+                          </div>
+
+                          <div className="grid grid-cols-1 md:grid-cols-5 gap-3 items-end">
                             <div className="md:col-span-2 relative">
                               <label className="block text-[11px] font-bold text-slate-500 uppercase mb-1">Pesquisar por Contrato ou Nome</label>
                               <div className="relative">
                                 <Search className="w-4 h-4 text-slate-400 absolute left-3 top-3" />
                                 <input
                                   type="text"
-                                  placeholder="Pesquisar por número do contrato, emitente ou nome da simulação..."
+                                  placeholder="Pesquisar por número, emitente ou cadastrador..."
                                   value={searchQuery}
                                   onChange={(e) => setSearchQuery(e.target.value)}
                                   className="w-full bg-slate-50 border border-slate-200 rounded-lg pl-9 pr-8 py-2 focus:outline-none focus:ring-1 focus:ring-emerald-500 text-slate-800 text-sm shadow-inner"
@@ -2734,7 +2941,7 @@ export default function App() {
                                   onChange={(e) => setEmitenteFilter(e.target.value)}
                                   className="w-full bg-slate-50 border border-slate-200 rounded-lg pl-8 pr-3 py-2 focus:outline-none focus:ring-1 focus:ring-emerald-500 text-slate-800 text-sm font-semibold cursor-pointer shadow-inner appearance-none"
                                 >
-                                  <option value="">Todos os Emitentes ({uniqueEmitentes.length})</option>
+                                  <option value="">Todos ({uniqueEmitentes.length})</option>
                                   {uniqueEmitentes.map(e => (
                                     <option key={e} value={e}>{e}</option>
                                   ))}
@@ -2742,451 +2949,428 @@ export default function App() {
                                 <ChevronDown className="w-4 h-4 text-slate-400 absolute right-3 top-3 pointer-events-none" />
                               </div>
                             </div>
+                            <div>
+                              <label className="block text-[11px] font-bold text-slate-500 uppercase mb-1">Visualizar Base</label>
+                              <div className="relative">
+                                <Users className="w-3.5 h-3.5 text-slate-400 absolute left-3 top-3 pointer-events-none" />
+                                <select
+                                  value={contractScopeFilter}
+                                  onChange={(e) => setContractScopeFilter(e.target.value as "all" | "mine")}
+                                  className="w-full bg-slate-50 border border-slate-200 rounded-lg pl-8 pr-3 py-2 focus:outline-none focus:ring-1 focus:ring-emerald-500 text-slate-800 text-sm font-semibold cursor-pointer shadow-inner appearance-none"
+                                >
+                                  <option value="all">Base Única</option>
+                                  <option value="mine">Meus Cadastros</option>
+                                </select>
+                                <ChevronDown className="w-4 h-4 text-slate-400 absolute right-3 top-3 pointer-events-none" />
+                              </div>
+                            </div>
+                            <div>
+                              <label className="block text-[11px] font-bold text-slate-500 uppercase mb-1">Formato de Exibição</label>
+                              <div className="flex items-center bg-slate-100 p-1 rounded-lg border border-slate-200">
+                                <button
+                                  type="button"
+                                  onClick={() => setContractViewMode("table")}
+                                  className={`flex-1 py-1.5 px-2 rounded font-bold text-xs flex items-center justify-center gap-1 transition cursor-pointer ${
+                                    contractViewMode === "table" ? "bg-white text-emerald-800 shadow-xs border border-slate-200" : "text-slate-500 hover:text-slate-800"
+                                  }`}
+                                >
+                                  <LayoutList className="w-3.5 h-3.5" /> Tabela
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => setContractViewMode("cards")}
+                                  className={`flex-1 py-1.5 px-2 rounded font-bold text-xs flex items-center justify-center gap-1 transition cursor-pointer ${
+                                    contractViewMode === "cards" ? "bg-white text-emerald-800 shadow-xs border border-slate-200" : "text-slate-500 hover:text-slate-800"
+                                  }`}
+                                >
+                                  <LayoutGrid className="w-3.5 h-3.5" /> Cards
+                                </button>
+                              </div>
+                            </div>
                           </div>
 
                           {loadingSimulations ? (
                             <div className="flex justify-center p-8"><Activity className="w-8 h-8 text-emerald-500 animate-spin" /></div>
-                          ) : (
-                            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                              {savedSimulations.filter(s => {
-                                const cData = s.contractData || s.contrato;
-                                const emitente = cData?.emitente || "";
-                                
-                                // Match emitente filter if specified
-                                if (emitenteFilter && emitente !== emitenteFilter) {
-                                  return false;
-                                }
-                                
-                                // Match global search query if specified
-                                if (searchQuery) {
-                                  const query = searchQuery.toLowerCase();
-                                  const matchNumero = (cData?.numero || "").toLowerCase().includes(query);
-                                  const matchEmitente = (cData?.emitente || "").toLowerCase().includes(query);
-                                  const matchName = (s.name || "").toLowerCase().includes(query);
-                                  return matchNumero || matchEmitente || matchName;
-                                }
-                                
-                                return true;
-                              }).map(sim => {
-                                const cData = sim.contractData || sim.contrato;
-                                const sData = sim.scenariosData || sim.cenarios;
-                                
-                                const isDocsExpanded = expandedDocsSimId === sim.id;
-                                const isHistoryExpanded = expandedDocsSimId === `${sim.id}_history`;
-                                const isLogsExpanded = expandedDocsSimId === `${sim.id}_logs`;
-                                const hasHistory = sim.history && sim.history.length > 0;
-                                const hasLogs = sim.auditLogs && sim.auditLogs.length > 0;
+                          ) : (() => {
+                            const filteredSimulations = savedSimulations.filter(s => {
+                              const cData = s.contractData || s.contrato;
+                              const emitente = cData?.emitente || "";
+                              
+                              if (contractScopeFilter === "mine") {
+                                const cById = s.createdById || s.userId;
+                                if (cById !== user?.uid) return false;
+                              }
 
-                                return (
-                                  <div key={sim.id} className={`p-5 border rounded-xl hover:border-emerald-300 transition-all flex flex-col gap-3 bg-white ${(isDocsExpanded || isHistoryExpanded || isLogsExpanded) ? 'border-emerald-400 shadow-md col-span-1 md:col-span-2' : 'border-slate-200 shadow-sm'}`}>
-                                    <div className="flex justify-between items-start gap-2">
-                                      <div className="space-y-1">
-                                        <div className="flex items-center gap-2">
-                                          <span className="font-bold text-slate-800 text-sm md:text-base">{sim.name}</span>
-                                          <span className="px-2 py-0.5 bg-emerald-50 text-emerald-700 rounded-full font-bold text-[10px] uppercase tracking-wider border border-emerald-200">
-                                            v{sim.version || 1}
-                                          </span>
-                                        </div>
-                                        <p className="text-[11px] text-slate-400">Criado em: {new Date(sim.createdAt).toLocaleDateString("pt-BR")}</p>
+                              if (emitenteFilter && emitente !== emitenteFilter) {
+                                return false;
+                              }
+                              
+                              if (searchQuery) {
+                                const query = searchQuery.toLowerCase();
+                                const matchNumero = (cData?.numero || "").toLowerCase().includes(query);
+                                const matchEmitente = (cData?.emitente || "").toLowerCase().includes(query);
+                                const matchName = (s.name || "").toLowerCase().includes(query);
+                                const matchCadastrador = ((s.createdByName || s.createdByEmail || "") as string).toLowerCase().includes(query);
+                                return matchNumero || matchEmitente || matchName || matchCadastrador;
+                              }
+                              
+                              return true;
+                            });
+
+                            if (filteredSimulations.length === 0) {
+                              return (
+                                <div className="text-center p-12 bg-white rounded-xl border border-slate-200 text-slate-500">
+                                  <p className="font-semibold text-slate-700 text-sm">Nenhum contrato encontrado para os filtros selecionados.</p>
+                                  <p className="text-xs text-slate-400 mt-1">Ajuste os campos de busca ou selecione "Base Única" para visualizar os contratos da equipe.</p>
                                 </div>
-                                <span className="text-[11px] font-mono bg-slate-100 text-slate-600 px-2 py-1 rounded">
-                                  Nº {cData?.numero || "S/N"}
-                                </span>
-                              </div>
+                              );
+                            }
 
-                              <div className="grid grid-cols-2 gap-2 text-xs bg-slate-50 p-3 rounded-lg border border-slate-100 text-slate-600">
-                                <div><strong>Emitente:</strong> <span className="text-slate-800 font-medium">{cData?.emitente || "Não informado"}</span></div>
-                                <div><strong>Credor:</strong> <span className="text-slate-800 font-medium">{cData?.credor || "Não informado"}</span></div>
-                                <div><strong>Principal:</strong> <span className="text-slate-800 font-medium">{formatCurrency(cData?.valorPrincipal || 0)}</span></div>
-                                <div><strong>Taxa Original:</strong> <span className="text-slate-800 font-medium">{formatPercentage(cData?.taxaJurosAnual || 0)} + {cData?.indexadorOriginal}</span></div>
-                              </div>
+                            if (contractViewMode === "table") {
+                              return (
+                                <div className="bg-white border border-slate-200 rounded-xl shadow-xs overflow-hidden">
+                                  <div className="overflow-x-auto">
+                                    <table className="w-full text-left border-collapse">
+                                      <thead>
+                                        <tr className="bg-slate-100/90 border-b border-slate-200 text-[11px] font-bold text-slate-600 uppercase tracking-wider">
+                                          <th className="p-3">Nº Contrato / Nome</th>
+                                          <th className="p-3">Emitente & Credor</th>
+                                          <th className="p-3 text-right">Valor Principal</th>
+                                          <th className="p-3">Taxa & Indexador</th>
+                                          <th className="p-3">Cadastrado por</th>
+                                          <th className="p-3 text-center">Ações</th>
+                                        </tr>
+                                      </thead>
+                                      <tbody className="divide-y divide-slate-100 text-xs">
+                                        {filteredSimulations.map(sim => {
+                                          const cData = sim.contractData || sim.contrato;
+                                          const sData = sim.scenariosData || sim.cenarios;
+                                          
+                                          const isDocsExpanded = expandedDocsSimId === sim.id;
+                                          const isHistoryExpanded = expandedDocsSimId === `${sim.id}_history`;
+                                          const isLogsExpanded = expandedDocsSimId === `${sim.id}_logs`;
+                                          const hasHistory = sim.history && sim.history.length > 0;
+                                          const hasLogs = sim.auditLogs && sim.auditLogs.length > 0;
 
-                              {/* OPERATOR IDENTIFICATION BADGE */}
-                              <div className="flex flex-wrap items-center gap-3 text-[11px] text-slate-500 bg-emerald-50/50 p-2 rounded-lg border border-emerald-100/60">
-                                <div className="flex items-center gap-1.5">
-                                  <UserCheck className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
-                                  <span>Cadastrado por: <strong className="text-slate-800 font-bold">{sim.createdByName || sim.createdByEmail || "Analista"}</strong></span>
-                                </div>
-                                {sim.updatedByName && (
-                                  <div className="flex items-center gap-1 border-l border-emerald-200/80 pl-3">
-                                    <Clock className="w-3.5 h-3.5 text-slate-400 shrink-0" />
-                                    <span>Última alteração: <strong className="text-slate-700 font-semibold">{sim.updatedByName}</strong> ({new Date(sim.updatedAt).toLocaleDateString("pt-BR")})</span>
-                                  </div>
-                                )}
-                              </div>
+                                          return (
+                                            <React.Fragment key={sim.id}>
+                                              <tr className="hover:bg-slate-50/80 transition-colors">
+                                                <td className="p-3 font-medium">
+                                                  <div className="flex items-center gap-1.5">
+                                                    <span className="font-bold text-slate-900 text-sm">{sim.name}</span>
+                                                    <span className="px-1.5 py-0.2 bg-emerald-50 text-emerald-700 rounded font-bold text-[10px] border border-emerald-200">
+                                                      v{sim.version || 1}
+                                                    </span>
+                                                  </div>
+                                                  <div className="text-[11px] font-mono text-slate-500 mt-0.5">
+                                                    Nº {cData?.numero || "S/N"}
+                                                  </div>
+                                                </td>
+                                                <td className="p-3">
+                                                  <div className="font-bold text-slate-800">{cData?.emitente || "Não informado"}</div>
+                                                  <div className="text-[11px] text-slate-500">Credor: {cData?.credor || "—"}</div>
+                                                </td>
+                                                <td className="p-3 text-right font-mono font-bold text-slate-900 text-sm">
+                                                  {formatCurrency(cData?.valorPrincipal || 0)}
+                                                </td>
+                                                <td className="p-3">
+                                                  <div className="font-semibold text-slate-800">{formatPercentage(cData?.taxaJurosAnual || 0)}</div>
+                                                  <div className="text-[11px] text-slate-500">Indexador: {cData?.indexadorOriginal || "INPC"}</div>
+                                                </td>
+                                                <td className="p-3">
+                                                  <div className="font-semibold text-slate-800 flex items-center gap-1">
+                                                    <UserCheck className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+                                                    <span>{sim.createdByName || sim.createdByEmail || "Analista"}</span>
+                                                  </div>
+                                                  <div className="text-[10px] text-slate-400 mt-0.5">
+                                                    {new Date(sim.createdAt).toLocaleDateString("pt-BR")}
+                                                  </div>
+                                                </td>
+                                                <td className="p-3">
+                                                  <div className="flex items-center justify-center gap-1.5">
+                                                    <button 
+                                                      onClick={() => {
+                                                        setContrato(cData);
+                                                        if (sData) setCenarios(sData);
+                                                        if (sim.laudo) setLaudo(sim.laudo);
+                                                        else setLaudo(null);
+                                                        setLoadedSimulationId(sim.id);
+                                                        setActiveNav("dashboard");
+                                                        showToast(`Contrato Nº ${cData?.numero || "S/N"} carregado!`, "success");
+                                                      }}
+                                                      className="px-2.5 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg font-bold text-xs transition flex items-center gap-1 cursor-pointer shadow-2xs"
+                                                      title="Carregar no Simulador"
+                                                    >
+                                                      <FileText className="w-3.5 h-3.5"/> Simulador
+                                                    </button>
+                                                    <button
+                                                      onClick={() => setExpandedDocsSimId(isDocsExpanded ? null : sim.id)}
+                                                      className={`px-2 py-1.5 rounded-lg font-bold text-xs transition flex items-center gap-1 cursor-pointer border ${isDocsExpanded ? 'bg-slate-800 text-white border-slate-800' : 'bg-slate-50 hover:bg-slate-100 text-slate-700 border-slate-200'}`}
+                                                      title="Documentos"
+                                                    >
+                                                      <FolderOpen className="w-3.5 h-3.5" />
+                                                      ({sim.associatedDocuments?.length || 0})
+                                                    </button>
+                                                    <button
+                                                      onClick={() => setExpandedDocsSimId(isLogsExpanded ? null : `${sim.id}_logs`)}
+                                                      className={`px-2 py-1.5 rounded-lg font-bold text-xs transition flex items-center gap-1 cursor-pointer border ${isLogsExpanded ? 'bg-slate-800 text-white border-slate-800' : 'bg-slate-50 hover:bg-slate-100 text-slate-700 border-slate-200'}`}
+                                                      title="Logs"
+                                                    >
+                                                      <ShieldCheck className="w-3.5 h-3.5 text-emerald-600" />
+                                                      ({hasLogs ? sim.auditLogs.length : 0})
+                                                    </button>
+                                                    <button
+                                                      onClick={() => {
+                                                        showConfirm("Deseja realmente remover esta simulação e todos os seus históricos?", async () => {
+                                                          try {
+                                                            await deleteDoc(doc(db, "simulations", sim.id));
+                                                            fetchSavedSimulations();
+                                                            showToast("Simulação removida com sucesso!", "success");
+                                                          } catch (err) {
+                                                            handleFirestoreError(err, OperationType.DELETE, `simulations/${sim.id}`);
+                                                          }
+                                                        });
+                                                      }}
+                                                      className="p-1.5 hover:bg-red-50 text-slate-400 hover:text-red-500 rounded-lg transition cursor-pointer"
+                                                      title="Remover"
+                                                    >
+                                                      <Trash2 className="w-4 h-4" />
+                                                    </button>
+                                                  </div>
+                                                </td>
+                                              </tr>
 
-                              {/* ACTIONS ROW */}
-                              <div className="flex flex-wrap items-center gap-2 pt-1.5 border-t border-slate-100">
-                                <button 
-                                  onClick={() => {
-                                    setContrato(cData);
-                                    if (sData) setCenarios(sData);
-                                    if (sim.laudo) {
-                                      setLaudo(sim.laudo);
-                                    } else {
-                                      setLaudo(null);
-                                    }
-                                    setLoadedSimulationId(sim.id);
-                                    setActiveNav("dashboard");
-                                    showToast(`Contrato Nº ${cData?.numero || "S/N"} carregado no Painel de Simulação!`, "success");
-                                  }}
-                                  className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg font-bold text-xs transition flex items-center gap-1 cursor-pointer"
-                                >
-                                  <FileText className="w-3.5 h-3.5"/> Carregar Simulador
-                                </button>
+                                              {/* Table View Expanded Panel Sub-row */}
+                                              {(isDocsExpanded || isHistoryExpanded || isLogsExpanded) && (
+                                                <tr className="bg-slate-50/90 border-b border-slate-200">
+                                                  <td colSpan={6} className="p-4">
+                                                    {/* ASSOCIATED DOCUMENTS EXPANDED PANEL */}
+                                                    {isDocsExpanded && (
+                                                      <div className="space-y-3">
+                                                        <div className="flex justify-between items-center">
+                                                          <h4 className="font-bold text-slate-800 text-xs uppercase tracking-wider flex items-center gap-1">
+                                                            <FolderOpen className="w-3.5 h-3.5 text-emerald-600" />
+                                                            Documentos Auxiliares do Banco
+                                                          </h4>
+                                                          <button
+                                                            onClick={() => setNewDocForm(newDocForm?.simId === sim.id ? null : { simId: sim.id, name: "", type: "Demonstrativo de Saldo Devedor", notes: "", fileName: "" })}
+                                                            className="px-2 py-1 bg-emerald-50 hover:bg-emerald-100 text-emerald-700 rounded font-bold text-[11px] transition flex items-center gap-1 cursor-pointer"
+                                                          >
+                                                            <Plus className="w-3 h-3" /> Anexar Documento do Banco
+                                                          </button>
+                                                        </div>
 
-                                <button
-                                  onClick={() => setExpandedDocsSimId(isDocsExpanded ? null : sim.id)}
-                                  className={`px-3 py-1.5 rounded-lg font-bold text-xs transition flex items-center gap-1 cursor-pointer border ${isDocsExpanded ? 'bg-slate-800 text-white border-slate-800' : 'bg-slate-50 hover:bg-slate-100 text-slate-700 border-slate-200'}`}
-                                >
-                                  <FolderOpen className="w-3.5 h-3.5" />
-                                  Documentos ({sim.associatedDocuments?.length || 0})
-                                </button>
+                                                        {newDocForm?.simId === sim.id && (
+                                                          <div className="bg-white p-4 rounded-xl border border-slate-200 text-xs space-y-3">
+                                                            <h5 className="font-bold text-slate-700 text-xs">Anexar Novo Documento Técnico</h5>
+                                                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                                                              <div>
+                                                                <label className="block text-[10px] font-bold text-slate-500 uppercase mb-1">Nome do Documento</label>
+                                                                <input
+                                                                  type="text"
+                                                                  placeholder="Ex: Demonstrativo de Evolução da Dívida"
+                                                                  value={newDocForm.name}
+                                                                  onChange={e => setNewDocForm({ ...newDocForm, name: e.target.value })}
+                                                                  className="w-full bg-slate-50 border border-slate-200 rounded p-1.5 text-xs text-slate-800 font-medium"
+                                                                />
+                                                              </div>
+                                                              <div>
+                                                                <label className="block text-[10px] font-bold text-slate-500 uppercase mb-1">Tipo de Documento</label>
+                                                                <select
+                                                                  value={newDocForm.type}
+                                                                  onChange={e => setNewDocForm({ ...newDocForm, type: e.target.value })}
+                                                                  className="w-full bg-slate-50 border border-slate-200 rounded p-1.5 text-xs text-slate-800 font-medium"
+                                                                >
+                                                                  <option value="Demonstrativo de Saldo Devedor">Demonstrativo de Saldo Devedor</option>
+                                                                  <option value="Planilha de Evolução / Cálculo">Planilha de Evolução / Cálculo</option>
+                                                                  <option value="Notificação de Atraso / Cobrança">Notificação de Atraso / Cobrança</option>
+                                                                  <option value="Aditivo Contratual">Aditivo Contratual</option>
+                                                                  <option value="Laudo / Parecer Técnico">Laudo / Parecer Técnico</option>
+                                                                  <option value="Outro">Outro Documento</option>
+                                                                </select>
+                                                              </div>
+                                                            </div>
+                                                            <div className="flex justify-end gap-2 pt-1">
+                                                              <button onClick={() => setNewDocForm(null)} className="px-3 py-1 bg-slate-200 text-slate-600 rounded text-xs font-bold">Cancelar</button>
+                                                            </div>
+                                                          </div>
+                                                        )}
 
-                                <button
-                                  onClick={() => setExpandedDocsSimId(isHistoryExpanded ? null : `${sim.id}_history`)}
-                                  className={`px-3 py-1.5 rounded-lg font-bold text-xs transition flex items-center gap-1 cursor-pointer border ${isHistoryExpanded ? 'bg-slate-800 text-white border-slate-800' : 'bg-slate-50 hover:bg-slate-100 text-slate-700 border-slate-200'}`}
-                                >
-                                  <History className="w-3.5 h-3.5" />
-                                  Histórico ({hasHistory ? sim.history.length : 0})
-                                </button>
+                                                        <div className="space-y-2">
+                                                          {sim.associatedDocuments && sim.associatedDocuments.length > 0 ? (
+                                                            sim.associatedDocuments.map((docItem: AssociatedDocument) => (
+                                                              <div key={docItem.id} className="bg-white p-3 rounded-xl border border-slate-200 flex items-center justify-between text-xs">
+                                                                <div className="flex items-center gap-2">
+                                                                  <FileText className="w-4 h-4 text-emerald-600" />
+                                                                  <div>
+                                                                    <p className="font-bold text-slate-800">{docItem.name}</p>
+                                                                    <p className="text-[10px] text-slate-400">{docItem.type} • {new Date(docItem.uploadDate).toLocaleDateString()}</p>
+                                                                  </div>
+                                                                </div>
+                                                                <div className="flex items-center gap-1 shrink-0">
+                                                                  <button 
+                                                                    onClick={() => setViewingDocument(docItem)}
+                                                                    className="px-2 py-1 bg-emerald-50 hover:bg-emerald-100 text-emerald-700 font-bold rounded-lg transition flex items-center gap-1 cursor-pointer"
+                                                                    title="Visualizar documento interno"
+                                                                  >
+                                                                    <Eye className="w-3.5 h-3.5" /> Abrir
+                                                                  </button>
+                                                                  <button 
+                                                                    onClick={() => handleAnalyzeAndFill(sim.id, docItem)}
+                                                                    disabled={analyzingDocId === docItem.id}
+                                                                    className="px-2 py-1 bg-teal-50 hover:bg-teal-100 text-teal-700 font-bold rounded-lg transition flex items-center gap-1 cursor-pointer disabled:opacity-50"
+                                                                    title="Analisar e extrair dados com IA"
+                                                                  >
+                                                                    <Sparkles className="w-3.5 h-3.5 text-amber-500" />
+                                                                    {analyzingDocId === docItem.id ? "Analisando..." : "Extrair IA"}
+                                                                  </button>
+                                                                  <button onClick={() => handleDeleteAssociatedDocument(sim.id, docItem.id)} className="text-slate-400 hover:text-red-500 p-1 cursor-pointer">
+                                                                    <Trash2 className="w-3.5 h-3.5" />
+                                                                  </button>
+                                                                </div>
+                                                              </div>
+                                                            ))
+                                                          ) : (
+                                                            <p className="text-slate-400 text-xs italic">Nenhum documento anexado.</p>
+                                                          )}
+                                                        </div>
+                                                      </div>
+                                                    )}
 
-                                <button
-                                  onClick={() => setExpandedDocsSimId(isLogsExpanded ? null : `${sim.id}_logs`)}
-                                  className={`px-3 py-1.5 rounded-lg font-bold text-xs transition flex items-center gap-1 cursor-pointer border ${isLogsExpanded ? 'bg-slate-800 text-white border-slate-800' : 'bg-slate-50 hover:bg-slate-100 text-slate-700 border-slate-200'}`}
-                                >
-                                  <ShieldCheck className="w-3.5 h-3.5 text-emerald-600" />
-                                  Logs ({hasLogs ? sim.auditLogs.length : 0})
-                                </button>
-
-                                <button
-                                  onClick={() => {
-                                    showConfirm("Deseja realmente remover esta simulação e todos os seus históricos?", async () => {
-                                      try {
-                                        await deleteDoc(doc(db, "simulations", sim.id));
-                                        fetchSavedSimulations();
-                                        showToast("Simulação removida com sucesso!", "success");
-                                      } catch (err) {
-                                        handleFirestoreError(err, OperationType.DELETE, `simulations/${sim.id}`);
-                                      }
-                                    });
-                                  }}
-                                  className="ml-auto p-1.5 hover:bg-red-50 text-slate-400 hover:text-red-500 rounded-lg transition cursor-pointer"
-                                  title="Remover"
-                                >
-                                  <Trash2 className="w-4 h-4" />
-                                </button>
-                              </div>
-
-                              {/* ASSOCIATED DOCUMENTS EXPANDED PANEL */}
-                              {isDocsExpanded && (
-                                <motion.div 
-                                  initial={{ opacity: 0, height: 0 }}
-                                  animate={{ opacity: 1, height: "auto" }}
-                                  className="pt-3 border-t border-slate-100 space-y-3"
-                                >
-                                  <div className="flex justify-between items-center">
-                                    <h4 className="font-bold text-slate-800 text-xs uppercase tracking-wider flex items-center gap-1">
-                                      <FolderOpen className="w-3.5 h-3.5 text-emerald-600" />
-                                      Documentos Auxiliares do Banco
-                                    </h4>
-                                    
-                                    <button
-                                      onClick={() => setNewDocForm(newDocForm?.simId === sim.id ? null : { simId: sim.id, name: "", type: "Demonstrativo de Saldo Devedor", notes: "", fileName: "" })}
-                                      className="px-2 py-1 bg-emerald-50 hover:bg-emerald-100 text-emerald-700 rounded font-bold text-[11px] transition flex items-center gap-1 cursor-pointer"
-                                    >
-                                      <Plus className="w-3 h-3" /> Anexar Documento do Banco
-                                    </button>
-                                  </div>
-
-                                  {/* Form for adding a new document */}
-                                  {newDocForm?.simId === sim.id && (
-                                    <div className="bg-slate-50 p-4 rounded-xl border border-slate-200 text-xs space-y-3">
-                                      <h5 className="font-bold text-slate-700 text-xs">Anexar Novo Documento Técnico</h5>
-                                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                                        <div>
-                                          <label className="block text-[10px] font-bold text-slate-500 uppercase mb-1">Nome do Documento</label>
-                                          <input
-                                            type="text"
-                                            placeholder="Ex: Demonstrativo de Evolução da Dívida"
-                                            value={newDocForm.name}
-                                            onChange={e => setNewDocForm({ ...newDocForm, name: e.target.value })}
-                                            className="w-full bg-white border border-slate-200 rounded p-1.5 text-xs text-slate-800 font-medium"
-                                          />
-                                        </div>
-                                        <div>
-                                          <label className="block text-[10px] font-bold text-slate-500 uppercase mb-1">Tipo de Documento</label>
-                                          <select
-                                            value={newDocForm.type}
-                                            onChange={e => setNewDocForm({ ...newDocForm, type: e.target.value })}
-                                            className="w-full bg-white border border-slate-200 rounded p-1.5 text-xs text-slate-800 font-medium"
-                                          >
-                                            <option value="Demonstrativo de Saldo Devedor">Demonstrativo de Saldo Devedor</option>
-                                            <option value="Planilha de Evolução / Cálculo">Planilha de Evolução / Cálculo</option>
-                                            <option value="Notificação de Atraso / Cobrança">Notificação de Atraso / Cobrança</option>
-                                            <option value="Aditivo Contratual">Aditivo Contratual</option>
-                                            <option value="Laudo / Parecer Técnico">Laudo / Parecer Técnico</option>
-                                            <option value="Outro">Outro Documento</option>
-                                          </select>
-                                        </div>
-                                        <div>
-                                          <label className="block text-[10px] font-bold text-slate-500 uppercase mb-1">Upload do Documento (PDF ou Imagem)</label>
-                                          <div className="relative">
-                                            <input
-                                              type="file"
-                                              accept=".pdf, .png, .jpg, .jpeg"
-                                              onChange={async (e) => {
-                                                const file = e.target.files?.[0];
-                                                if (file) {
-                                                  try {
-                                                    const base64Data = await new Promise<string>((resolve, reject) => {
-                                                      const reader = new FileReader();
-                                                      reader.onload = (event) => {
-                                                        const result = event.target?.result as string;
-                                                        resolve(result.split(",")[1]);
-                                                      };
-                                                      reader.onerror = reject;
-                                                      reader.readAsDataURL(file);
-                                                    });
-                                                    setNewDocForm({
-                                                      ...newDocForm,
-                                                      fileName: file.name,
-                                                      fileData: base64Data,
-                                                      mimeType: file.type || "application/pdf",
-                                                      name: newDocForm.name || file.name.replace(/\.[^/.]+$/, "")
-                                                    });
-                                                    showToast("Documento carregado com sucesso!", "success");
-                                                  } catch (err) {
-                                                    showToast("Erro ao ler arquivo.", "error");
-                                                  }
-                                                }
-                                              }}
-                                              className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10"
-                                            />
-                                            <div className="w-full bg-white border border-dashed border-slate-300 hover:border-emerald-500 rounded p-2 text-center transition flex flex-col items-center justify-center gap-1">
-                                              <UploadCloud className="w-4 h-4 text-emerald-600" />
-                                              <span className="text-[10px] font-medium text-slate-600 truncate max-w-full">
-                                                {newDocForm.fileName ? `Selecionado: ${newDocForm.fileName}` : "Selecione arquivo PDF/Imagem"}
-                                              </span>
-                                            </div>
-                                          </div>
-                                        </div>
-                                        <div>
-                                          <label className="block text-[10px] font-bold text-slate-500 uppercase mb-1">Observações</label>
-                                          <input
-                                            type="text"
-                                            placeholder="Ex: Recebido por e-mail do gerente do Banco do Brasil"
-                                            value={newDocForm.notes}
-                                            onChange={e => setNewDocForm({ ...newDocForm, notes: e.target.value })}
-                                            className="w-full bg-white border border-slate-200 rounded p-1.5 text-xs text-slate-800 font-medium"
-                                          />
-                                        </div>
-                                      </div>
-                                      <div className="flex justify-end gap-2 pt-1">
-                                        <button
-                                          onClick={() => setNewDocForm(null)}
-                                          className="px-3 py-1 bg-slate-200 hover:bg-slate-300 text-slate-700 font-bold rounded text-xs transition cursor-pointer"
-                                        >
-                                          Cancelar
-                                        </button>
-                                        <button
-                                          onClick={() => handleAddAssociatedDocument(sim.id, newDocForm)}
-                                          disabled={!newDocForm.fileData}
-                                          className={`px-3 py-1 font-bold rounded text-xs transition cursor-pointer ${newDocForm.fileData ? 'bg-emerald-600 hover:bg-emerald-700 text-white' : 'bg-slate-300 text-slate-500 cursor-not-allowed'}`}
-                                        >
-                                          Associar Documento
-                                        </button>
-                                      </div>
-                                    </div>
-                                  )}
-
-                                  {/* List of associated documents */}
-                                  <div className="space-y-1.5">
-                                    {sim.associatedDocuments && sim.associatedDocuments.length > 0 ? (
-                                      sim.associatedDocuments.map((docItem: AssociatedDocument) => (
-                                        <div key={docItem.id} className="flex items-center justify-between p-3 bg-slate-50 rounded-lg border border-slate-150 hover:bg-slate-100/60 transition text-xs">
-                                          <div className="flex items-center gap-3 min-w-0 flex-1">
-                                            <div className="bg-slate-200 p-2 rounded text-slate-600 shrink-0">
-                                              <FileText className="w-4 h-4" />
-                                            </div>
-                                            <div className="min-w-0 flex-1">
-                                              <p className="font-bold text-slate-800 truncate">{docItem.name}</p>
-                                              <div className="flex flex-wrap items-center gap-2 text-[10px] text-slate-500 mt-0.5">
-                                                <span className="font-semibold text-emerald-600 bg-emerald-50 px-1.5 py-0.5 rounded border border-emerald-100">{docItem.type}</span>
-                                                <span>•</span>
-                                                <span className="truncate max-w-[150px]">Arquivo: {docItem.fileName}</span>
-                                                <span>•</span>
-                                                <span>Enviado: {new Date(docItem.uploadDate).toLocaleDateString()}</span>
-                                              </div>
-                                              {docItem.notes && (
-                                                <p className="text-[10px] text-slate-500 mt-1 bg-white/70 p-1 rounded border border-slate-100 italic">
-                                                  Nota: {docItem.notes}
-                                                </p>
+                                                    {/* AUDIT LOGS EXPANDED PANEL */}
+                                                    {isLogsExpanded && (
+                                                      <div className="space-y-2">
+                                                        <h4 className="font-bold text-slate-800 text-xs uppercase tracking-wider flex items-center gap-1">
+                                                          <ShieldCheck className="w-3.5 h-3.5 text-emerald-600" /> Logs de Alteração & Operador
+                                                        </h4>
+                                                        <div className="space-y-2">
+                                                          {hasLogs ? (
+                                                            sim.auditLogs.map((log: AuditLogEntry, idx: number) => (
+                                                              <div key={log.id || idx} className="bg-white p-2.5 rounded-lg border border-slate-200 text-xs">
+                                                                <div className="flex justify-between items-center font-bold text-slate-800">
+                                                                  <span>{log.action}</span>
+                                                                  <span className="text-[10px] text-slate-400 font-mono">{new Date(log.timestamp).toLocaleDateString("pt-BR")}</span>
+                                                                </div>
+                                                                <p className="text-[11px] text-slate-600 mt-0.5">{log.details}</p>
+                                                                <div className="text-[10px] text-emerald-700 font-semibold mt-1">Por: {log.userName} ({log.userEmail})</div>
+                                                              </div>
+                                                            ))
+                                                          ) : (
+                                                            <p className="text-slate-400 text-xs italic">Nenhum log cadastrado.</p>
+                                                          )}
+                                                        </div>
+                                                      </div>
+                                                    )}
+                                                  </td>
+                                                </tr>
                                               )}
-                                            </div>
-                                          </div>
-                                          <div className="flex items-center gap-1 shrink-0 ml-3">
-                                            {docItem.fileData && (
-                                              <>
-                                                <button
-                                                  onClick={() => handleAnalyzeAndFill(sim.id, docItem)}
-                                                  disabled={analyzingDocId !== null}
-                                                  className={`p-1.5 hover:bg-slate-200 text-slate-500 hover:text-emerald-600 rounded transition cursor-pointer flex items-center justify-center gap-1 ${
-                                                    analyzingDocId === docItem.id ? "animate-pulse text-emerald-500" : ""
-                                                  }`}
-                                                  title="Analisar com IA e Preencher Painel"
-                                                >
-                                                  <Sparkles className="w-3.5 h-3.5 text-emerald-500" />
-                                                  {analyzingDocId === docItem.id && <span className="text-[9px] text-emerald-600 font-bold">Lendo...</span>}
-                                                </button>
-                                                <button
-                                                  onClick={() => {
-                                                    try {
-                                                      const byteCharacters = atob(docItem.fileData!);
-                                                      const byteNumbers = new Array(byteCharacters.length);
-                                                      for (let i = 0; i < byteCharacters.length; i++) {
-                                                        byteNumbers[i] = byteCharacters.charCodeAt(i);
-                                                      }
-                                                      const byteArray = new Uint8Array(byteNumbers);
-                                                      const blob = new Blob([byteArray], { type: docItem.mimeType || 'application/pdf' });
-                                                      const blobUrl = URL.createObjectURL(blob);
-                                                      
-                                                      const link = document.createElement('a');
-                                                      link.href = blobUrl;
-                                                      link.download = docItem.fileName;
-                                                      document.body.appendChild(link);
-                                                      link.click();
-                                                      document.body.removeChild(link);
-                                                      URL.revokeObjectURL(blobUrl);
-                                                      showToast("Download iniciado!", "success");
-                                                    } catch (err) {
-                                                      showToast("Não foi possível baixar o arquivo.", "error");
-                                                    }
-                                                  }}
-                                                  className="p-1.5 hover:bg-slate-200 text-slate-500 hover:text-emerald-600 rounded transition cursor-pointer"
-                                                  title="Baixar / Visualizar Documento"
-                                                >
-                                                  <Download className="w-3.5 h-3.5" />
-                                                </button>
-                                              </>
-                                            )}
-                                            <button
-                                              onClick={() => handleDeleteAssociatedDocument(sim.id, docItem.id)}
-                                              className="text-slate-400 hover:text-red-500 p-1.5 rounded transition cursor-pointer"
-                                              title="Remover Documento"
-                                            >
-                                              <Trash2 className="w-3.5 h-3.5" />
-                                            </button>
-                                          </div>
-                                        </div>
-                                      ))
-                                    ) : (
-                                      <p className="text-slate-500 text-xs italic text-center py-4 bg-slate-50/50 rounded-xl border border-dashed border-slate-150">
-                                        Nenhum documento auxiliar anexado a este contrato ainda.
-                                      </p>
-                                    )}
+                                            </React.Fragment>
+                                          );
+                                        })}
+                                      </tbody>
+                                    </table>
                                   </div>
-                                </motion.div>
-                              )}
+                                </div>
+                              );
+                            }
 
-                              {/* VERSION HISTORY EXPANDED PANEL */}
-                              {isHistoryExpanded && (
-                                <motion.div
-                                  initial={{ opacity: 0, height: 0 }}
-                                  animate={{ opacity: 1, height: "auto" }}
-                                  className="pt-3 border-t border-slate-100 space-y-3"
-                                >
-                                  <h4 className="font-bold text-slate-800 text-xs uppercase tracking-wider flex items-center gap-1">
-                                    <History className="w-3.5 h-3.5 text-emerald-600" />
-                                    Histórico de Versões do Contrato
-                                  </h4>
+                            // Cards View mode
+                            return (
+                              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                {filteredSimulations.map(sim => {
+                                  const cData = sim.contractData || sim.contrato;
+                                  const sData = sim.scenariosData || sim.cenarios;
+                                  
+                                  const isDocsExpanded = expandedDocsSimId === sim.id;
+                                  const isHistoryExpanded = expandedDocsSimId === `${sim.id}_history`;
+                                  const isLogsExpanded = expandedDocsSimId === `${sim.id}_logs`;
+                                  const hasHistory = sim.history && sim.history.length > 0;
+                                  const hasLogs = sim.auditLogs && sim.auditLogs.length > 0;
 
-                                  <div className="relative border-l-2 border-slate-200 pl-4 ml-2 py-1 space-y-4">
-                                    {/* Active Version */}
-                                    <div className="relative">
-                                      <div className="absolute -left-[21px] top-1.5 w-2.5 h-2.5 rounded-full bg-emerald-500 ring-4 ring-emerald-50"></div>
-                                      <div className="text-xs">
-                                        <p className="font-bold text-slate-800">Versão {sim.version || 1} (Ativa)</p>
-                                        <p className="text-[10px] text-slate-400">Atualizado em: {new Date(sim.updatedAt || sim.createdAt).toLocaleDateString()} às {new Date(sim.updatedAt || sim.createdAt).toLocaleTimeString()}</p>
-                                        <p className="text-slate-600 mt-1 font-medium bg-emerald-50/40 p-2 rounded border border-emerald-100/50">Esta é a versão ativa utilizada no simulador de renegociação.</p>
+                                  return (
+                                    <div key={sim.id} className={`p-5 border rounded-xl hover:border-emerald-300 transition-all flex flex-col gap-3 bg-white ${(isDocsExpanded || isHistoryExpanded || isLogsExpanded) ? 'border-emerald-400 shadow-md col-span-1 md:col-span-2' : 'border-slate-200 shadow-sm'}`}>
+                                      <div className="flex justify-between items-start gap-2">
+                                        <div className="space-y-1">
+                                          <div className="flex items-center gap-2">
+                                            <span className="font-bold text-slate-800 text-sm md:text-base">{sim.name}</span>
+                                            <span className="px-2 py-0.5 bg-emerald-50 text-emerald-700 rounded-full font-bold text-[10px] uppercase tracking-wider border border-emerald-200">
+                                              v{sim.version || 1}
+                                            </span>
+                                          </div>
+                                          <p className="text-[11px] text-slate-400">Criado em: {new Date(sim.createdAt).toLocaleDateString("pt-BR")}</p>
+                                        </div>
+                                        <span className="text-[11px] font-mono bg-slate-100 text-slate-600 px-2 py-1 rounded">
+                                          Nº {cData?.numero || "S/N"}
+                                        </span>
+                                      </div>
+
+                                      <div className="grid grid-cols-2 gap-2 text-xs bg-slate-50 p-3 rounded-lg border border-slate-100 text-slate-600">
+                                        <div><strong>Emitente:</strong> <span className="text-slate-800 font-medium">{cData?.emitente || "Não informado"}</span></div>
+                                        <div><strong>Credor:</strong> <span className="text-slate-800 font-medium">{cData?.credor || "Não informado"}</span></div>
+                                        <div><strong>Principal:</strong> <span className="text-slate-800 font-medium">{formatCurrency(cData?.valorPrincipal || 0)}</span></div>
+                                        <div><strong>Taxa Original:</strong> <span className="text-slate-800 font-medium">{formatPercentage(cData?.taxaJurosAnual || 0)} + {cData?.indexadorOriginal}</span></div>
+                                      </div>
+
+                                      <div className="flex flex-wrap items-center gap-3 text-[11px] text-slate-500 bg-emerald-50/50 p-2 rounded-lg border border-emerald-100/60">
+                                        <div className="flex items-center gap-1.5">
+                                          <UserCheck className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+                                          <span>Cadastrado por: <strong className="text-slate-800 font-bold">{sim.createdByName || sim.createdByEmail || "Analista"}</strong></span>
+                                        </div>
+                                      </div>
+
+                                      <div className="flex flex-wrap items-center gap-2 pt-1.5 border-t border-slate-100">
+                                        <button 
+                                          onClick={() => {
+                                            setContrato(cData);
+                                            if (sData) setCenarios(sData);
+                                            if (sim.laudo) setLaudo(sim.laudo);
+                                            else setLaudo(null);
+                                            setLoadedSimulationId(sim.id);
+                                            setActiveNav("dashboard");
+                                            showToast(`Contrato Nº ${cData?.numero || "S/N"} carregado!`, "success");
+                                          }}
+                                          className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg font-bold text-xs transition flex items-center gap-1 cursor-pointer"
+                                        >
+                                          <FileText className="w-3.5 h-3.5"/> Carregar Simulador
+                                        </button>
+                                        <button
+                                          onClick={() => setExpandedDocsSimId(isDocsExpanded ? null : sim.id)}
+                                          className={`px-3 py-1.5 rounded-lg font-bold text-xs transition flex items-center gap-1 cursor-pointer border ${isDocsExpanded ? 'bg-slate-800 text-white border-slate-800' : 'bg-slate-50 hover:bg-slate-100 text-slate-700 border-slate-200'}`}
+                                        >
+                                          <FolderOpen className="w-3.5 h-3.5" />
+                                          Documentos ({sim.associatedDocuments?.length || 0})
+                                        </button>
+                                        <button
+                                          onClick={() => setExpandedDocsSimId(isLogsExpanded ? null : `${sim.id}_logs`)}
+                                          className={`px-3 py-1.5 rounded-lg font-bold text-xs transition flex items-center gap-1 cursor-pointer border ${isLogsExpanded ? 'bg-slate-800 text-white border-slate-800' : 'bg-slate-50 hover:bg-slate-100 text-slate-700 border-slate-200'}`}
+                                        >
+                                          <ShieldCheck className="w-3.5 h-3.5 text-emerald-600" />
+                                          Logs ({hasLogs ? sim.auditLogs.length : 0})
+                                        </button>
+                                        <button
+                                          onClick={() => {
+                                            showConfirm("Deseja realmente remover esta simulação e todos os seus históricos?", async () => {
+                                              try {
+                                                await deleteDoc(doc(db, "simulations", sim.id));
+                                                fetchSavedSimulations();
+                                                showToast("Simulação removida com sucesso!", "success");
+                                              } catch (err) {
+                                                handleFirestoreError(err, OperationType.DELETE, `simulations/${sim.id}`);
+                                              }
+                                            });
+                                          }}
+                                          className="ml-auto p-1.5 hover:bg-red-50 text-slate-400 hover:text-red-500 rounded-lg transition cursor-pointer"
+                                          title="Remover"
+                                        >
+                                          <Trash2 className="w-4 h-4" />
+                                        </button>
                                       </div>
                                     </div>
-
-                                    {/* Historic Entries */}
-                                    {hasHistory ? (
-                                      sim.history.map((hist: ContractHistoryEntry, index: number) => (
-                                        <div key={index} className="relative">
-                                          <div className="absolute -left-[21px] top-1.5 w-2.5 h-2.5 rounded-full bg-slate-300 ring-4 ring-slate-50"></div>
-                                          <div className="text-xs">
-                                            <div className="flex justify-between items-center">
-                                              <p className="font-bold text-slate-700">Versão {hist.version}</p>
-                                              <button
-                                                onClick={() => handleRevertVersion(sim.id, hist)}
-                                                className="text-[10px] font-bold text-emerald-600 hover:text-emerald-700 hover:underline cursor-pointer flex items-center gap-0.5"
-                                              >
-                                                <RefreshCw className="w-2.5 h-2.5 animate-pulse" /> Reverter para v{hist.version}
-                                              </button>
-                                            </div>
-                                            <p className="text-[10px] text-slate-400">Salvo em: {new Date(hist.updatedAt).toLocaleDateString()} às {new Date(hist.updatedAt).toLocaleTimeString()}</p>
-                                            <p className="text-slate-500 mt-1 italic">{hist.changeSummary || "Sem descrição de alteração."}</p>
-                                          </div>
-                                        </div>
-                                      ))
-                                    ) : (
-                                      <p className="text-slate-400 text-xs italic pl-2 pt-1">Nenhum histórico de versão anterior registrado para este contrato.</p>
-                                    )}
-                                  </div>
-                                </motion.div>
-                              )}
-
-                              {/* AUDIT LOGS EXPANDED PANEL */}
-                              {isLogsExpanded && (
-                                <motion.div
-                                  initial={{ opacity: 0, height: 0 }}
-                                  animate={{ opacity: 1, height: "auto" }}
-                                  className="pt-3 border-t border-slate-100 space-y-3"
-                                >
-                                  <h4 className="font-bold text-slate-800 text-xs uppercase tracking-wider flex items-center gap-1">
-                                    <ShieldCheck className="w-3.5 h-3.5 text-emerald-600" />
-                                    Logs de Alteração & Rastreabilidade do Operador
-                                  </h4>
-
-                                  <div className="relative border-l-2 border-emerald-300 pl-4 ml-2 py-1 space-y-3">
-                                    {hasLogs ? (
-                                      sim.auditLogs.map((log: AuditLogEntry, index: number) => (
-                                        <div key={log.id || index} className="relative text-xs">
-                                          <div className="absolute -left-[21px] top-1 w-2.5 h-2.5 rounded-full bg-emerald-600 ring-4 ring-emerald-50"></div>
-                                          <div className="bg-slate-50 p-2.5 rounded-lg border border-slate-200 space-y-1">
-                                            <div className="flex justify-between items-center">
-                                              <span className="font-bold text-slate-800 text-xs">{log.action}</span>
-                                              <span className="text-[10px] font-mono text-slate-400">
-                                                {new Date(log.timestamp).toLocaleDateString("pt-BR")} às {new Date(log.timestamp).toLocaleTimeString("pt-BR")}
-                                              </span>
-                                            </div>
-                                            <p className="text-[11px] text-slate-600">{log.details}</p>
-                                            <div className="flex items-center gap-1 text-[10px] font-semibold text-emerald-800 pt-0.5">
-                                              <UserCheck className="w-3 h-3 text-emerald-600" />
-                                              <span>Operador: {log.userName} ({log.userEmail})</span>
-                                            </div>
-                                          </div>
-                                        </div>
-                                      ))
-                                    ) : (
-                                      <p className="text-slate-400 text-xs italic pl-2 pt-1">Nenhum log de alteração registrado para este contrato.</p>
-                                    )}
-                                  </div>
-                                </motion.div>
-                              )}
-                            </div>
-                          );
-                        })}
-                        {savedSimulations.length === 0 && (
-                          <div className="col-span-2 text-center p-8 text-slate-500">
-                            Nenhum contrato ou simulação salvo encontrado.
-                          </div>
-                        )}
-                      </div>
-                    )}
+                                  );
+                                })}
+                              </div>
+                            );
+                          })()}
                         </>
                       );
                     })()}
@@ -3982,7 +4166,7 @@ export default function App() {
                                             : "bg-blue-50 border-blue-200 text-blue-800")
                                     }`}
                                   >
-                                    <option value="false">{isVencida ? "Atrado (E)" : "Aberto (A)"}</option>
+                                    <option value="false">{isVencida ? "Atrasado (E)" : "Aberto (A)"}</option>
                                     <option value="true">Pago (L)</option>
                                   </select>
                                 </td>
@@ -4837,12 +5021,7 @@ export default function App() {
               <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden mt-6">
                 
                 {/* SECTION TABS HEADER */}
-                <div className="bg-slate-50 px-6 py-4 border-b border-slate-200 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
-                  <div className="flex items-center gap-2">
-                    <Activity className="w-5 h-5 text-emerald-600" />
-                    <h3 className="font-bold text-slate-800 text-sm">Projeções Gráficas e Fluxos de Caixa Detalhados</h3>
-                  </div>
-
+                <div className="bg-slate-50 px-6 py-3 border-b border-slate-200 flex items-center justify-between">
                   <div className="flex bg-slate-200/60 p-1 rounded-xl text-xs gap-1">
                     <button
                       onClick={() => setActiveTab("comparativo")}
@@ -4861,32 +5040,54 @@ export default function App() {
                       Projeção Mensal
                     </button>
                   </div>
+
+                  {activeTab === "comparativo" && (
+                    <button
+                      onClick={() => setShowChart(!showChart)}
+                      className="px-3 py-1.5 bg-white hover:bg-slate-100 text-slate-700 border border-slate-300 rounded-lg text-xs font-bold transition flex items-center gap-1.5 cursor-pointer shadow-2xs"
+                      title={showChart ? "Ocultar visualização gráfica" : "Exibir gráfico comparativo"}
+                    >
+                      {showChart ? (
+                        <>
+                          <EyeOff className="w-3.5 h-3.5 text-slate-500" />
+                          <span>Ocultar Gráfico</span>
+                        </>
+                      ) : (
+                        <>
+                          <Eye className="w-3.5 h-3.5 text-emerald-600" />
+                          <span>Exibir Gráfico</span>
+                        </>
+                      )}
+                    </button>
+                  )}
                 </div>
 
                 <div className="p-6">
                   {activeTab === "comparativo" ? (
                     
-                    /* CHART TAB: SIDE-BY-SIDE GRAPH BAR COMPARISONS */
+                    /* CHART TAB: SIDE-BY-SIDE GRAPH BAR COMPARISONS (OPTIONAL) */
                     <div className="space-y-6">
-                      <div className="h-80 w-full">
-                        <ResponsiveContainer width="100%" height="100%">
-                          <BarChart
-                            data={chartDataTotal}
-                            margin={{ top: 10, right: 10, left: 20, bottom: 5 }}
-                          >
-                            <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
-                            <XAxis dataKey="name" stroke="#94a3b8" fontSize={11} tickLine={false} />
-                            <YAxis stroke="#94a3b8" fontSize={11} tickLine={false} tickFormatter={(val) => `R$ ${(val/1000000).toFixed(1)}M`} />
-                            <ChartTooltip 
-                              formatter={(value: any) => [formatCurrency(Number(value)), ""]}
-                              contentStyle={{ background: "#0f172a", borderRadius: "12px", color: "#fff", border: "none" }}
-                            />
-                            <Legend wrapperStyle={{ fontSize: 11 }} />
-                            <Bar dataKey="Principal Amortizado" fill="#94a3b8" radius={[4, 4, 0, 0]} barSize={40} />
-                            <Bar dataKey="Juros Acumulados" fill="#10b981" radius={[4, 4, 0, 0]} barSize={40} />
-                          </BarChart>
-                        </ResponsiveContainer>
-                      </div>
+                      {showChart && (
+                        <div className="h-80 w-full animate-fadeIn border-b border-slate-100 pb-6">
+                          <ResponsiveContainer width="100%" height="100%">
+                            <BarChart
+                              data={chartDataTotal}
+                              margin={{ top: 10, right: 10, left: 20, bottom: 5 }}
+                            >
+                              <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
+                              <XAxis dataKey="name" stroke="#94a3b8" fontSize={11} tickLine={false} />
+                              <YAxis stroke="#94a3b8" fontSize={11} tickLine={false} tickFormatter={(val) => `R$ ${(val/1000000).toFixed(1)}M`} />
+                              <ChartTooltip 
+                                formatter={(value: any) => [formatCurrency(Number(value)), ""]}
+                                contentStyle={{ background: "#0f172a", borderRadius: "12px", color: "#fff", border: "none" }}
+                              />
+                              <Legend wrapperStyle={{ fontSize: 11 }} />
+                              <Bar dataKey="Principal Amortizado" fill="#94a3b8" radius={[4, 4, 0, 0]} barSize={40} />
+                              <Bar dataKey="Juros Acumulados" fill="#10b981" radius={[4, 4, 0, 0]} barSize={40} />
+                            </BarChart>
+                          </ResponsiveContainer>
+                        </div>
+                      )}
 
                       {/* Scenarios detailed breakdown table */}
                       <div className="overflow-x-auto rounded-xl border border-slate-150">
@@ -5306,6 +5507,7 @@ export default function App() {
         valorIndexadorAnual={memoriaModalState.valorIndexadorAnual}
         indexadorRates={indexadores}
         associatedDocuments={savedSimulations.find(s => s.id === loadedSimulationId)?.associatedDocuments || []}
+        onViewDocument={(doc) => setViewingDocument(doc)}
       />
 
       {/* Simulador de Negociação e Repactuação Modal */}
@@ -5338,6 +5540,21 @@ export default function App() {
         onFetchOfficial={fetchIndexadores}
         loadingOfficial={loadingIndexadores}
         lastUpdatedStr={lastUpdated}
+      />
+
+      {/* Modal de Visualização de Documentos Internos e Anexos (PDF / Imagens) */}
+      <DocumentViewerModal
+        document={viewingDocument}
+        contratoNumero={contrato?.numero}
+        onClose={() => setViewingDocument(null)}
+        onAnalyzeWithAI={(docItem) => {
+          if (loadedSimulationId) {
+            handleAnalyzeAndFill(loadedSimulationId, docItem);
+          } else {
+            showToast("Carregue ou salve uma simulação para aplicar a extração por IA.", "info");
+          }
+        }}
+        isAnalyzing={analyzingDocId === viewingDocument?.id}
       />
     </div>
   );

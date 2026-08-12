@@ -177,9 +177,58 @@ export function calcularProjecaoMensal(
 }
 
 // Formats numbers with comma decimal separator for PT-BR Excel compatibility
-export function formatCSVNumber(value: number | undefined | null, decimals: number = 2): string {
-  if (value === undefined || value === null || isNaN(value)) return "0," + "0".repeat(decimals);
-  return value.toFixed(decimals).replace(".", ",");
+export function formatCSVNumber(value: number | string | undefined | null, decimals: number = 2): string {
+  if (value === undefined || value === null) return "0," + "0".repeat(decimals);
+  const num = typeof value === "number" ? value : parseFloat(String(value).replace(",", "."));
+  if (isNaN(num)) return "0," + "0".repeat(decimals);
+  return num.toFixed(decimals).replace(".", ",");
+}
+
+// Export overdue liquidation breakdown to CSV (Excel compatible)
+export function exportAtrasosToCSV(
+  liquidanteReal: any,
+  contrato: Contrato,
+  indexadorNome: string,
+  taxaMultaPct: number,
+  taxaMoraMesPct: number,
+  dataBaseApuracao: string
+): string {
+  let csv = "\uFEFF"; // UTF-8 BOM for Excel
+
+  csv += `APURAÇÃO DE DÉBITOS, ENCARGOS DE MORA E LIQUIDAÇÃO TOTAL\n`;
+  csv += `Contrato Nº;${contrato.numero || "S/N"}\n`;
+  csv += `Emitente / Devedor;${contrato.emitente || "Não informado"}\n`;
+  csv += `Credor / Instituição;${contrato.credor || "Não informado"}\n`;
+  csv += `Data-Base de Apuração;${formatDate(dataBaseApuracao)}\n`;
+  csv += `Indexador de Correção;${indexadorNome}\n`;
+  csv += `Multa Moratória;${formatCSVNumber(taxaMultaPct)}%\n`;
+  csv += `Juros de Mora;${formatCSVNumber(taxaMoraMesPct)}% a.m.\n\n`;
+
+  csv += `RESUMO CONSOLIDADO DA LIQUIDAÇÃO\n`;
+  csv += `Item;Valor (R$)\n`;
+  csv += `Total Principal Vencido;${formatCSVNumber(liquidanteReal.totalOriginalVencido)}\n`;
+  csv += `Total Correção Monetária (${indexadorNome});${formatCSVNumber(liquidanteReal.totalCorrecao)}\n`;
+  csv += `Total Multa Moratória (${formatCSVNumber(taxaMultaPct)}%);${formatCSVNumber(liquidanteReal.totalMulta)}\n`;
+  csv += `Total Juros de Mora (${formatCSVNumber(taxaMoraMesPct)}%/m);${formatCSVNumber(liquidanteReal.totalJurosMora)}\n`;
+  csv += `Subtotal Débito Vencido em Atraso;${formatCSVNumber(liquidanteReal.subtotalAtraso)}\n`;
+  if (liquidanteReal.valHonorarios > 0) {
+    csv += `Honorários Advocatícios;${formatCSVNumber(liquidanteReal.valHonorarios)}\n`;
+  }
+  csv += `LIQUIDAÇÃO TOTAL DO DÉBITO EM ABERTO (Somente Vencido);${formatCSVNumber(liquidanteReal.totalGeralDebitoLiquido)}\n`;
+  csv += `Saldo Principal Vincendo (A Vencer - ${liquidanteReal.qtdVincendas} parcelas);${formatCSVNumber(liquidanteReal.saldoVincendo)}\n`;
+  csv += `LIQUIDAÇÃO TOTAL DO CONTRATO (Débito em Aberto + Saldo Vincendo);${formatCSVNumber(liquidanteReal.totalLiquidacaoContrato)}\n\n`;
+
+  csv += `DEMONSTRATIVO DETALHADO PARCELA A PARCELA\n`;
+  csv += `Nº Parcela;Vencimento;Situação;Valor Original (R$);Valor Pago (R$);Saldo Devido (R$);Dias Atraso;Correção (${indexadorNome}) (R$);Multa (R$);Juros Mora (R$);Total Liquidado Parcela (R$)\n`;
+
+  if (liquidanteReal.parcelas && Array.isArray(liquidanteReal.parcelas)) {
+    liquidanteReal.parcelas.forEach((p: any) => {
+      const situacao = p.isPaga ? "QUITADA" : p.isVencida ? "EM ATRASO" : "A VENCER";
+      csv += `${p.numero};${formatDate(p.dataVencimento)};${situacao};${formatCSVNumber(p.valorOriginal)};${formatCSVNumber(p.valorPago)};${formatCSVNumber(p.saldoDevedorPrincipal)};${p.diasAtraso};${formatCSVNumber(p.correcaoMonetaria)};${formatCSVNumber(p.multaMoratoria)};${formatCSVNumber(p.jurosMora)};${formatCSVNumber(p.totalLiquidaçãoParcela)}\n`;
+    });
+  }
+
+  return csv;
 }
 
 // Export monthly breakdown to CSV (Excel compatible)
