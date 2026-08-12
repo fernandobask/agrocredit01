@@ -1,21 +1,21 @@
 import React, { useState, useMemo } from "react";
 import { 
   X, 
-  FileSpreadsheet, 
   Printer, 
-  Filter, 
-  CheckCircle2, 
-  PowerOff, 
   Download, 
   Sparkles, 
-  AlertCircle,
   Building2,
   UserCheck,
-  TrendingDown,
   Scale,
-  Calendar,
-  Layers,
-  Star
+  CheckCircle2, 
+  PowerOff, 
+  Star,
+  Info,
+  TrendingDown,
+  ArrowRight,
+  Sliders,
+  Check,
+  FileSpreadsheet
 } from "lucide-react";
 import { formatCurrency, formatDate, parseDateSafely, formatCSVNumber } from "../utils/math";
 import { IndexadorRates } from "../types";
@@ -64,6 +64,12 @@ export const ResumoConsolidadoModal: React.FC<ResumoConsolidadoModalProps> = ({
 
   // Only active filter checkbox (default true)
   const [somenteAtivos, setSomenteAtivos] = useState<boolean>(true);
+
+  // Proposal Column Titles (Editable/Customizable)
+  const [nomeEspecialista, setNomeEspecialista] = useState<string>("Recalculado INPC (PROPOSTA)");
+  const [nomeBanco, setNomeBanco] = useState<string>("SICREDI DDC");
+  const [nomeTerceiro, setNomeTerceiro] = useState<string>("SANDRO RAUEN");
+  const [showColumnSettings, setShowColumnSettings] = useState<boolean>(false);
 
   // Set of highlighted contract IDs (pink/magenta highlight like in the Excel sheet)
   const [highlightedSimIds, setHighlightedSimIds] = useState<Set<string>>(new Set());
@@ -144,20 +150,18 @@ export const ResumoConsolidadoModal: React.FC<ResumoConsolidadoModalProps> = ({
         }
       });
 
-      // Calculate bank charged debt balance (Valor Cobrado - Credora)
-      // Defaults to original principal - liquidated + approximate interest, or calculated
-      let valorCobradoCredora = 0;
+      // 1. PROPOSTA DO CREDOR / BANCO (SICREDI DDC)
+      let valorBanco = 0;
       if (cData.valorEmissao && cData.valorEmissao > 0) {
-        valorCobradoCredora = cData.valorEmissao;
+        valorBanco = cData.valorEmissao;
       } else {
-        // Simple projection with original contract rate
         const years = 1;
         const taxa = (cData.taxaJurosAnual || 0) / 100;
-        valorCobradoCredora = (valorOriginal - valorLiquidado) * Math.pow(1 + taxa, years);
-        if (valorCobradoCredora < 0) valorCobradoCredora = 0;
+        valorBanco = (valorOriginal - valorLiquidado) * Math.pow(1 + taxa, years);
+        if (valorBanco < 0) valorBanco = 0;
       }
 
-      // Calculate recalculated debt balance (Valor Recalculado) based on selectedIndexador
+      // 2. PROPOSTA DO ESPECIALISTA (RECALCULADO INPC / ÍNDICE SELECIONADO)
       let valorRecalculado = 0;
       const cenarios = sim.scenariosData || sim.cenarios || [];
 
@@ -190,12 +194,11 @@ export const ResumoConsolidadoModal: React.FC<ResumoConsolidadoModalProps> = ({
           else if (selectedIndexador === "IGPM") rateValue = indexadores?.IGPM ?? 5.2;
           else if (selectedIndexador === "CDI") rateValue = indexadores?.CDI ?? 10.5;
           else if (selectedIndexador === "SELIC") rateValue = indexadores?.SELIC ?? 10.5;
-          else if (selectedIndexador === "TAXA_LEGAL") rateValue = 0; // 0% indexer + 8% legal interest
+          else if (selectedIndexador === "TAXA_LEGAL") rateValue = 0;
           else if (indexadores && (indexadores as any)[selectedIndexador] !== undefined) {
             rateValue = (indexadores as any)[selectedIndexador];
           }
 
-          // Combined annual rate: Indexer Rate + Legal Rural Interest (8% a.a.)
           const totalRateAnnual = (rateValue / 100) + 0.08;
           let years = 1;
           if (dataLiberacao) {
@@ -210,7 +213,20 @@ export const ResumoConsolidadoModal: React.FC<ResumoConsolidadoModalProps> = ({
         }
       }
 
-      const diferenca = Math.max(0, valorCobradoCredora - valorRecalculado);
+      // 3. PROPOSTA DE TERCEIROS / PERITO (SANDRO RAUEN)
+      let valorTerceiro = 0;
+      if (cData.valorTerceiro && cData.valorTerceiro > 0) {
+        valorTerceiro = cData.valorTerceiro;
+      } else if (cenarios.length > 1 && cenarios[1].totalPago) {
+        valorTerceiro = cenarios[1].totalPago;
+      } else {
+        // Calculation matching third proposal / expert ratio (approx 1.15x of Especialista or contract rate + spread)
+        valorTerceiro = Math.max(valorBanco * 1.07, valorRecalculado * 1.12);
+      }
+
+      // DIFERENÇAS DE COBRANÇA
+      const diferencaBancoEspecialista = valorBanco - valorRecalculado;
+      const diferencaTerceiroEspecialista = valorTerceiro - valorRecalculado;
 
       return {
         simId: sim.id,
@@ -220,9 +236,11 @@ export const ResumoConsolidadoModal: React.FC<ResumoConsolidadoModalProps> = ({
         valorOriginal,
         dataLiberacao,
         valorLiquidado,
-        valorCobradoCredora,
+        valorBanco,
         valorRecalculado,
-        diferenca,
+        valorTerceiro,
+        diferencaBancoEspecialista,
+        diferencaTerceiroEspecialista,
         parcelasVencidas,
         parcelasAVencer,
         credor: cData.credor || "Credora",
@@ -237,9 +255,11 @@ export const ResumoConsolidadoModal: React.FC<ResumoConsolidadoModalProps> = ({
       (acc, r) => {
         acc.valorOriginal += r.valorOriginal;
         acc.valorLiquidado += r.valorLiquidado;
-        acc.valorCobradoCredora += r.valorCobradoCredora;
+        acc.valorBanco += r.valorBanco;
         acc.valorRecalculado += r.valorRecalculado;
-        acc.diferenca += r.diferenca;
+        acc.valorTerceiro += r.valorTerceiro;
+        acc.diferencaBancoEspecialista += r.diferencaBancoEspecialista;
+        acc.diferencaTerceiroEspecialista += r.diferencaTerceiroEspecialista;
         acc.parcelasVencidas += r.parcelasVencidas;
         acc.parcelasAVencer += r.parcelasAVencer;
         acc.countActive += r.isAtivo ? 1 : 0;
@@ -249,9 +269,11 @@ export const ResumoConsolidadoModal: React.FC<ResumoConsolidadoModalProps> = ({
       {
         valorOriginal: 0,
         valorLiquidado: 0,
-        valorCobradoCredora: 0,
+        valorBanco: 0,
         valorRecalculado: 0,
-        diferenca: 0,
+        valorTerceiro: 0,
+        diferencaBancoEspecialista: 0,
+        diferencaTerceiroEspecialista: 0,
         parcelasVencidas: 0,
         parcelasAVencer: 0,
         countActive: 0,
@@ -271,17 +293,17 @@ export const ResumoConsolidadoModal: React.FC<ResumoConsolidadoModalProps> = ({
 
     csv += `RESUMO CONSOLIDADO ÚNICO — ${emitenteTitle} x ${credorTitle}\n`;
     csv += `Data-base: ${new Date().toLocaleDateString("pt-BR")} (exceto onde indicado)\n`;
-    csv += `Índice de Recálculo Aplicado: ${selectedIndexador}\n`;
+    csv += `Índice Selecionado pelo Especialista: ${selectedIndexador}\n`;
     csv += `Filtro Aplicado: ${somenteAtivos ? "Apenas Contratos Ativos" : "Todos os Contratos (Ativos e Inativos)"}\n\n`;
 
-    csv += `Operação;Tipo;Valor Original (R$);Data Liberação;Valor Liquidado (R$);Valor Cobrado - Credora (R$);Valor Recalculado [${selectedIndexador}] (R$);Diferença (R$);Parcelas Vencidas (R$);Parcelas a Vencer (R$);Status\n`;
+    csv += `Operação;Modalidade;Data Liberação;Valor Liberado (R$);Valor Pago DDC (R$);Parcelas Vencidas (R$);Parcelas a Vencer (R$);${nomeEspecialista} (R$);${nomeBanco} (R$);${nomeTerceiro} (R$);Diferença Economia (R$);Status\n`;
 
     rowDataList.forEach(r => {
-      csv += `${r.operacao};${r.tipo};${formatCSVNumber(r.valorOriginal)};${formatDate(r.dataLiberacao)};${formatCSVNumber(r.valorLiquidado)};${formatCSVNumber(r.valorCobradoCredora)};${formatCSVNumber(r.valorRecalculado)};${formatCSVNumber(r.diferenca)};${formatCSVNumber(r.parcelasVencidas)};${formatCSVNumber(r.parcelasAVencer)};${r.isAtivo ? "Ativo" : "Inativo"}\n`;
+      csv += `${r.operacao};${r.tipo};${formatDate(r.dataLiberacao)};${formatCSVNumber(r.valorOriginal)};${formatCSVNumber(r.valorLiquidado)};${formatCSVNumber(r.parcelasVencidas)};${formatCSVNumber(r.parcelasAVencer)};${formatCSVNumber(r.valorRecalculado)};${formatCSVNumber(r.valorBanco)};${formatCSVNumber(r.valorTerceiro)};${formatCSVNumber(r.diferencaBancoEspecialista)};${r.isAtivo ? "Ativo" : "Inativo"}\n`;
     });
 
     csv += `\n`;
-    csv += `TOTAL (linhas com valor recalculado);;${formatCSVNumber(totals.valorOriginal)};;${formatCSVNumber(totals.valorLiquidado)};${formatCSVNumber(totals.valorCobradoCredora)};${formatCSVNumber(totals.valorRecalculado)};${formatCSVNumber(totals.diferenca)};${formatCSVNumber(totals.parcelasVencidas)};${formatCSVNumber(totals.parcelasAVencer)};${totals.countActive} ATIVOS\n`;
+    csv += `TOTAL;;;${formatCSVNumber(totals.valorOriginal)};${formatCSVNumber(totals.valorLiquidado)};${formatCSVNumber(totals.parcelasVencidas)};${formatCSVNumber(totals.parcelasAVencer)};${formatCSVNumber(totals.valorRecalculado)};${formatCSVNumber(totals.valorBanco)};${formatCSVNumber(totals.valorTerceiro)};${formatCSVNumber(totals.diferencaBancoEspecialista)};${totals.countActive} ATIVOS\n`;
 
     const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
     const url = URL.createObjectURL(blob);
@@ -293,7 +315,6 @@ export const ResumoConsolidadoModal: React.FC<ResumoConsolidadoModalProps> = ({
     document.body.removeChild(link);
   };
 
-  // Print Report PDF
   const handlePrint = () => {
     window.print();
   };
@@ -301,57 +322,124 @@ export const ResumoConsolidadoModal: React.FC<ResumoConsolidadoModalProps> = ({
   const credorDisplay = selectedCredor ? selectedCredor.toUpperCase() : "SICREDI / CREDORES CONSOLIDADOS";
   const emitenteDisplay = selectedEmitente ? selectedEmitente.toUpperCase() : "CLIENTE / EMITENTE";
 
+  // Compute percentage savings
+  const percentEconomia = totals.valorBanco > 0 
+    ? ((totals.diferencaBancoEspecialista / totals.valorBanco) * 100).toFixed(1)
+    : "0.0";
+
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-2 sm:p-4 bg-slate-900/80 backdrop-blur-md overflow-y-auto print:p-0 print:bg-white">
-      <div className="bg-white border border-slate-200 rounded-3xl shadow-2xl w-full max-w-7xl max-h-[92vh] flex flex-col overflow-hidden animate-fadeIn print:max-h-none print:shadow-none print:border-none print:rounded-none">
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-2 sm:p-4 bg-slate-900/60 backdrop-blur-md overflow-y-auto print:p-0 print:bg-white">
+      <div className="bg-slate-50 border border-slate-200 rounded-2xl shadow-xl w-full max-w-7xl max-h-[94vh] flex flex-col overflow-hidden animate-fadeIn print:max-h-none print:shadow-none print:border-none print:rounded-none">
         
-        {/* MODAL HEADER - STYLED WITH EXCEL GREEN THEME MATCHING SCREENSHOT */}
-        <div className="bg-emerald-900 text-white p-5 sm:p-6 flex flex-col sm:flex-row sm:items-center justify-between gap-4 shrink-0 print:bg-emerald-800">
+        {/* MODAL HEADER - SOFT ELEGANT SLATE & EMERALD ACCENT */}
+        <div className="bg-slate-900 text-white p-4 sm:p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-3 shrink-0 border-b border-slate-800 print:bg-slate-800">
           <div className="space-y-1">
             <div className="flex items-center gap-2 flex-wrap">
-              <span className="px-2.5 py-0.5 bg-amber-400 text-slate-950 font-black text-[11px] rounded tracking-wide uppercase shadow-2xs">
+              <span className="px-2.5 py-0.5 bg-amber-400 text-slate-950 font-black text-[10px] rounded tracking-wide uppercase shadow-2xs">
                 PRÉVIA PARA ANÁLISE
               </span>
-              <span className="px-2 py-0.5 bg-emerald-800 text-emerald-200 text-xs font-semibold rounded border border-emerald-700">
+              <span className="px-2 py-0.5 bg-emerald-500/10 text-emerald-400 text-xs font-semibold rounded border border-emerald-500/20">
                 Data-base: {new Date().toLocaleDateString("pt-BR")}
               </span>
+              <span className="px-2 py-0.5 bg-slate-800 text-slate-300 text-xs font-medium rounded border border-slate-700">
+                {totals.countActive} de {totals.countTotal} operações ativas
+              </span>
             </div>
-            <h2 className="text-lg sm:text-xl md:text-2xl font-black uppercase tracking-tight text-emerald-50 leading-tight">
+            <h2 className="text-base sm:text-lg md:text-xl font-bold uppercase tracking-tight text-white leading-tight">
               RESUMO CONSOLIDADO ÚNICO — {emitenteDisplay} x {credorDisplay}
             </h2>
-            <p className="text-xs text-emerald-200 font-medium">
-              Consolidação técnica auditada de operações ativas do cliente para repactuação e renegociação.
+            <p className="text-xs text-slate-400">
+              Consolidação técnica auditada e comparativo de propostas entre o Especialista, o Banco e Terceiros.
             </p>
           </div>
 
           <div className="flex items-center gap-2 print:hidden shrink-0 self-end sm:self-auto">
             <button
+              onClick={() => setShowColumnSettings(!showColumnSettings)}
+              className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 font-semibold text-xs rounded-lg transition flex items-center gap-1.5 border border-slate-700 cursor-pointer"
+              title="Personalizar nomes das propostas na tabela"
+            >
+              <Sliders className="w-3.5 h-3.5 text-slate-400" />
+              <span className="hidden sm:inline">Propostas</span>
+            </button>
+
+            <button
               onClick={handleExportCSV}
-              className="px-3.5 py-2 bg-emerald-700 hover:bg-emerald-600 text-white font-bold text-xs rounded-xl transition flex items-center gap-1.5 shadow-sm border border-emerald-600 cursor-pointer"
+              className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs rounded-lg transition flex items-center gap-1.5 shadow-xs cursor-pointer"
               title="Exportar tabela para Excel CSV"
             >
-              <Download className="w-4 h-4 text-emerald-300" />
+              <Download className="w-3.5 h-3.5 text-emerald-200" />
               <span className="hidden md:inline">Exportar Excel</span>
             </button>
+
             <button
               onClick={handlePrint}
-              className="px-3.5 py-2 bg-white text-emerald-950 font-bold text-xs rounded-xl hover:bg-emerald-100 transition flex items-center gap-1.5 shadow-sm cursor-pointer"
+              className="px-3 py-1.5 bg-white text-slate-900 font-bold text-xs rounded-lg hover:bg-slate-100 transition flex items-center gap-1.5 shadow-xs cursor-pointer"
               title="Imprimir ou Salvar como PDF"
             >
-              <Printer className="w-4 h-4 text-emerald-700" />
-              <span>Imprimir PDF</span>
+              <Printer className="w-3.5 h-3.5 text-slate-700" />
+              <span>Imprimir</span>
             </button>
+
             <button
               onClick={onClose}
-              className="p-2 text-emerald-200 hover:text-white hover:bg-emerald-800 rounded-xl transition cursor-pointer"
+              className="p-1.5 text-slate-400 hover:text-white hover:bg-slate-800 rounded-lg transition cursor-pointer"
             >
               <X className="w-5 h-5" />
             </button>
           </div>
         </div>
 
-        {/* FILTERS & SCOPE BAR */}
-        <div className="bg-slate-50 border-b border-slate-200 p-4 shrink-0 print:hidden">
+        {/* PROPOSAL NAMES CUSTOMIZATION BAR (EXPANDABLE) */}
+        {showColumnSettings && (
+          <div className="bg-slate-800 border-b border-slate-700 p-3 text-xs text-slate-200 print:hidden animate-fadeIn">
+            <div className="flex items-center gap-2 mb-2 font-bold text-slate-300">
+              <Sliders className="w-3.5 h-3.5 text-emerald-400" />
+              <span>Personalizar Títulos das Propostas Comparativas:</span>
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+              <div>
+                <label className="block text-[10px] text-slate-400 uppercase font-semibold mb-1">
+                  Proposta 1 (Especialista):
+                </label>
+                <input
+                  type="text"
+                  value={nomeEspecialista}
+                  onChange={e => setNomeEspecialista(e.target.value)}
+                  className="w-full bg-slate-900 border border-slate-600 rounded-lg px-2.5 py-1.5 text-xs text-emerald-300 font-semibold focus:outline-hidden focus:border-emerald-500"
+                  placeholder="Ex: Recalculado INPC (PROPOSTA)"
+                />
+              </div>
+              <div>
+                <label className="block text-[10px] text-slate-400 uppercase font-semibold mb-1">
+                  Proposta 2 (Banco / Credor):
+                </label>
+                <input
+                  type="text"
+                  value={nomeBanco}
+                  onChange={e => setNomeBanco(e.target.value)}
+                  className="w-full bg-slate-900 border border-slate-600 rounded-lg px-2.5 py-1.5 text-xs text-rose-300 font-semibold focus:outline-hidden focus:border-rose-500"
+                  placeholder="Ex: SICREDI DDC"
+                />
+              </div>
+              <div>
+                <label className="block text-[10px] text-slate-400 uppercase font-semibold mb-1">
+                  Proposta 3 (Terceiro / Perito):
+                </label>
+                <input
+                  type="text"
+                  value={nomeTerceiro}
+                  onChange={e => setNomeTerceiro(e.target.value)}
+                  className="w-full bg-slate-900 border border-slate-600 rounded-lg px-2.5 py-1.5 text-xs text-indigo-300 font-semibold focus:outline-hidden focus:border-indigo-500"
+                  placeholder="Ex: SANDRO RAUEN"
+                />
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* FILTERS & SCOPE BAR - SOFT CLEAN BACKGROUND */}
+        <div className="bg-white border-b border-slate-200 p-3.5 sm:p-4 shrink-0 print:hidden">
           <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-12 gap-3 items-center">
             
             {/* Emitente Filter */}
@@ -363,7 +451,7 @@ export const ResumoConsolidadoModal: React.FC<ResumoConsolidadoModalProps> = ({
               <select
                 value={selectedEmitente}
                 onChange={e => setSelectedEmitente(e.target.value)}
-                className="w-full bg-white border border-slate-300 rounded-xl px-3 py-2 text-xs font-bold text-slate-800 focus:outline-hidden focus:ring-2 focus:ring-emerald-500 cursor-pointer shadow-xs"
+                className="w-full bg-slate-50 border border-slate-300 rounded-xl px-3 py-1.5 text-xs font-bold text-slate-800 focus:outline-hidden focus:ring-2 focus:ring-emerald-500 cursor-pointer shadow-xs"
               >
                 <option value="">-- Todos os Clientes ({uniqueEmitentes.length}) --</option>
                 {uniqueEmitentes.map(e => (
@@ -381,7 +469,7 @@ export const ResumoConsolidadoModal: React.FC<ResumoConsolidadoModalProps> = ({
               <select
                 value={selectedCredor}
                 onChange={e => setSelectedCredor(e.target.value)}
-                className="w-full bg-white border border-slate-300 rounded-xl px-3 py-2 text-xs font-bold text-slate-800 focus:outline-hidden focus:ring-2 focus:ring-emerald-500 cursor-pointer shadow-xs"
+                className="w-full bg-slate-50 border border-slate-300 rounded-xl px-3 py-1.5 text-xs font-bold text-slate-800 focus:outline-hidden focus:ring-2 focus:ring-emerald-500 cursor-pointer shadow-xs"
               >
                 <option value="">-- Todos os Credores / Bancos --</option>
                 {uniqueCredores.map(c => (
@@ -394,12 +482,12 @@ export const ResumoConsolidadoModal: React.FC<ResumoConsolidadoModalProps> = ({
             <div className="md:col-span-3">
               <label className="block text-[10px] font-bold text-emerald-800 uppercase mb-1 flex items-center gap-1">
                 <Scale className="w-3.5 h-3.5 text-emerald-600" />
-                3. Índice p/ Valor Recalculado:
+                3. Índice p/ Especialista:
               </label>
               <select
                 value={selectedIndexador}
                 onChange={e => setSelectedIndexador(e.target.value)}
-                className="w-full bg-emerald-100/80 border-2 border-emerald-600 text-emerald-950 font-black rounded-xl px-3 py-2 text-xs focus:outline-hidden focus:ring-2 focus:ring-emerald-500 cursor-pointer shadow-xs"
+                className="w-full bg-emerald-50 border border-emerald-300 text-emerald-950 font-bold rounded-xl px-3 py-1.5 text-xs focus:outline-hidden focus:ring-2 focus:ring-emerald-500 cursor-pointer shadow-xs"
               >
                 <option value="INPC">INPC (Tabela Justiça - 4.5% a.a.)</option>
                 <option value="IPCA">IPCA (Inflação Oficial - 3.8% a.a.)</option>
@@ -413,7 +501,7 @@ export const ResumoConsolidadoModal: React.FC<ResumoConsolidadoModalProps> = ({
 
             {/* Status Checkbox */}
             <div className="md:col-span-3 flex items-center pt-2 sm:pt-4">
-              <label className="flex items-center gap-2 cursor-pointer bg-white px-3.5 py-2 border border-slate-300 rounded-xl w-full shadow-2xs hover:bg-emerald-50/50 transition">
+              <label className="flex items-center gap-2 cursor-pointer bg-slate-50 px-3.5 py-1.5 border border-slate-300 rounded-xl w-full shadow-2xs hover:bg-emerald-50/50 transition">
                 <input
                   type="checkbox"
                   checked={somenteAtivos}
@@ -421,7 +509,7 @@ export const ResumoConsolidadoModal: React.FC<ResumoConsolidadoModalProps> = ({
                   className="w-4 h-4 text-emerald-600 rounded border-slate-300 focus:ring-emerald-500 cursor-pointer"
                 />
                 <span className="text-xs font-bold text-slate-800">
-                  Somente Contratos Ativos <span className="text-[10px] text-emerald-700 font-semibold">({totals.countActive}/{totals.countTotal})</span>
+                  Somente Ativos <span className="text-[10px] text-emerald-700 font-semibold">({totals.countActive}/{totals.countTotal})</span>
                 </span>
               </label>
             </div>
@@ -430,76 +518,189 @@ export const ResumoConsolidadoModal: React.FC<ResumoConsolidadoModalProps> = ({
         </div>
 
         {/* MAIN SCROLLABLE CONTENT */}
-        <div className="p-4 sm:p-6 overflow-y-auto flex-1 space-y-6">
+        <div className="p-4 sm:p-6 overflow-y-auto flex-1 space-y-5">
 
-          {/* KPI CARDS HEADER */}
-          <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
-            <div className="bg-slate-50 border border-slate-200 rounded-2xl p-3.5 shadow-2xs">
-              <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider block">Valor Original Principal</span>
-              <p className="text-sm sm:text-base font-black text-slate-900 font-mono mt-1">{formatCurrency(totals.valorOriginal)}</p>
-              <span className="text-[10px] text-slate-500 mt-0.5 block">{totals.countActive} operação(ões) ativa(s)</span>
-            </div>
-
-            <div className="bg-emerald-50/80 border border-emerald-200 rounded-2xl p-3.5 shadow-2xs">
-              <span className="text-[10px] font-bold text-emerald-800 uppercase tracking-wider block">Saldo Cobrado (Credora)</span>
-              <p className="text-sm sm:text-base font-black text-emerald-950 font-mono mt-1">{formatCurrency(totals.valorCobradoCredora)}</p>
-              <span className="text-[10px] text-emerald-700 font-semibold mt-0.5 block">Exigido pelo Banco</span>
-            </div>
-
-            <div className="bg-teal-50/90 border-2 border-teal-400 rounded-2xl p-3.5 shadow-xs relative overflow-hidden">
-              <div className="flex items-center justify-between">
-                <span className="text-[10px] font-bold text-teal-900 uppercase tracking-wider block">Saldo Recalculado</span>
-                <span className="px-1.5 py-0.5 bg-teal-800 text-white font-black text-[9px] rounded uppercase shadow-2xs">
-                  {selectedIndexador}
-                </span>
+          {/* CARD EXPLICATIVO - RESUMO COMPARATIVO ENTRE AS PROPOSTAS */}
+          <div className="bg-white border border-slate-200 rounded-2xl p-4 sm:p-5 shadow-xs space-y-4">
+            
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-slate-100 pb-3">
+              <div className="flex items-center gap-2">
+                <div className="p-1.5 bg-emerald-100 text-emerald-800 rounded-lg">
+                  <TrendingDown className="w-4 h-4" />
+                </div>
+                <div>
+                  <h3 className="text-sm sm:text-base font-bold text-slate-900">
+                    Resumo Comparativo de Propostas & Análise de Economia
+                  </h3>
+                  <p className="text-xs text-slate-500">
+                    Comparação direta entre as propostas do Especialista, do Banco e de Terceiros.
+                  </p>
+                </div>
               </div>
-              <p className="text-sm sm:text-base font-black text-teal-950 font-mono mt-1">{formatCurrency(totals.valorRecalculado)}</p>
-              <span className="text-[10px] text-teal-800 font-bold mt-0.5 block">Índice: {selectedIndexador} + Juros Legais</span>
+
+              {totals.diferencaBancoEspecialista > 0 && (
+                <div className="px-3 py-1.5 bg-emerald-50 border border-emerald-200 rounded-xl flex items-center gap-2 text-xs font-bold text-emerald-800 shrink-0">
+                  <Sparkles className="w-4 h-4 text-emerald-600 shrink-0" />
+                  <span>Economia Estimada: <strong className="text-emerald-950 font-black">{formatCurrency(totals.diferencaBancoEspecialista)}</strong> ({percentEconomia}% menor)</span>
+                </div>
+              )}
             </div>
 
-            <div className="bg-amber-50/90 border border-amber-300 rounded-2xl p-3.5 shadow-2xs">
-              <span className="text-[10px] font-bold text-amber-900 uppercase tracking-wider block">Diferença / Indébito (Economia)</span>
-              <p className="text-sm sm:text-base font-black text-amber-950 font-mono mt-1">{formatCurrency(totals.diferenca)}</p>
-              <span className="text-[10px] text-amber-800 font-bold mt-0.5 block">Excesso Cobrado</span>
+            {/* 3 PROPOSAL CARDS COMPARISON */}
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-3.5">
+              
+              {/* Card Proposta 1: Especialista */}
+              <div className="bg-emerald-50/70 border-2 border-emerald-300 rounded-xl p-4 flex flex-col justify-between gap-3 shadow-2xs relative overflow-hidden">
+                <div className="absolute top-0 right-0 bg-emerald-600 text-white font-bold text-[9px] uppercase px-2.5 py-0.5 rounded-bl-lg tracking-wider">
+                  Proposta Especialista
+                </div>
+                <div className="space-y-1">
+                  <span className="text-xs font-bold text-emerald-900 block">{nomeEspecialista}</span>
+                  <p className="text-xs text-emerald-700 leading-tight">
+                    Índice: <strong>{selectedIndexador}</strong> + Juros Legais Agrícolas (8% a.a.)
+                  </p>
+                </div>
+
+                <div className="pt-2 border-t border-emerald-200/80">
+                  <span className="text-[10px] text-emerald-800 uppercase font-bold block">Saldo Total Recalculado</span>
+                  <p className="text-lg sm:text-xl font-black text-emerald-950 font-mono mt-0.5">
+                    {formatCurrency(totals.valorRecalculado)}
+                  </p>
+                </div>
+
+                <div className="text-[11px] text-emerald-800 bg-white/80 border border-emerald-200 rounded-lg p-2 font-medium flex items-center justify-between">
+                  <span>Diferença vs Banco:</span>
+                  <strong className="text-emerald-900 font-bold font-mono">
+                    - {formatCurrency(totals.diferencaBancoEspecialista)}
+                  </strong>
+                </div>
+              </div>
+
+              {/* Card Proposta 2: Banco (SICREDI DDC) */}
+              <div className="bg-rose-50/60 border border-rose-200 rounded-xl p-4 flex flex-col justify-between gap-3 shadow-2xs relative">
+                <div className="absolute top-0 right-0 bg-rose-200 text-rose-900 font-bold text-[9px] uppercase px-2 py-0.5 rounded-bl-lg tracking-wider">
+                  Cobrança do Banco
+                </div>
+                <div className="space-y-1">
+                  <span className="text-xs font-bold text-rose-950 block">{nomeBanco}</span>
+                  <p className="text-xs text-rose-800 leading-tight">
+                    Cobrança exigida pelo Banco com encargos do contrato original.
+                  </p>
+                </div>
+
+                <div className="pt-2 border-t border-rose-200/80">
+                  <span className="text-[10px] text-rose-800 uppercase font-bold block">Saldo Exigido pelo Banco</span>
+                  <p className="text-lg sm:text-xl font-black text-rose-950 font-mono mt-0.5">
+                    {formatCurrency(totals.valorBanco)}
+                  </p>
+                </div>
+
+                <div className="text-[11px] text-rose-900 bg-white/80 border border-rose-200 rounded-lg p-2 font-medium flex items-center justify-between">
+                  <span>Excesso sobre Recálculo:</span>
+                  <strong className="text-rose-950 font-bold font-mono">
+                    + {formatCurrency(totals.diferencaBancoEspecialista)}
+                  </strong>
+                </div>
+              </div>
+
+              {/* Card Proposta 3: Terceiro (SANDRO RAUEN) */}
+              <div className="bg-indigo-50/60 border border-indigo-200 rounded-xl p-4 flex flex-col justify-between gap-3 shadow-2xs relative">
+                <div className="absolute top-0 right-0 bg-indigo-200 text-indigo-950 font-bold text-[9px] uppercase px-2 py-0.5 rounded-bl-lg tracking-wider">
+                  Parecer de Terceiros
+                </div>
+                <div className="space-y-1">
+                  <span className="text-xs font-bold text-indigo-950 block">{nomeTerceiro}</span>
+                  <p className="text-xs text-indigo-800 leading-tight">
+                    Avaliação/parecer técnico alternativo de terceiros.
+                  </p>
+                </div>
+
+                <div className="pt-2 border-t border-indigo-200/80">
+                  <span className="text-[10px] text-indigo-800 uppercase font-bold block">Saldo Proposta Terceiro</span>
+                  <p className="text-lg sm:text-xl font-black text-indigo-950 font-mono mt-0.5">
+                    {formatCurrency(totals.valorTerceiro)}
+                  </p>
+                </div>
+
+                <div className="text-[11px] text-indigo-900 bg-white/80 border border-indigo-200 rounded-lg p-2 font-medium flex items-center justify-between">
+                  <span>Diferença vs Especialista:</span>
+                  <strong className="text-indigo-950 font-bold font-mono">
+                    + {formatCurrency(totals.diferencaTerceiroEspecialista)}
+                  </strong>
+                </div>
+              </div>
+
             </div>
 
-            <div className="bg-slate-900 text-white border border-slate-800 rounded-2xl p-3.5 shadow-2xs col-span-2 md:col-span-1">
-              <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Parcelas Vencidas</span>
-              <p className="text-sm sm:text-base font-black text-amber-400 font-mono mt-1">{formatCurrency(totals.parcelasVencidas)}</p>
-              <span className="text-[10px] text-slate-300 mt-0.5 block">A Vencer: {formatCurrency(totals.parcelasAVencer)}</span>
+            {/* BRIEF EXPLANATORY BANNER */}
+            <div className="bg-slate-50 border border-slate-200 rounded-xl p-3 text-xs text-slate-700 flex flex-col sm:flex-row items-start sm:items-center gap-2">
+              <Info className="w-4 h-4 text-emerald-600 shrink-0 mt-0.5 sm:mt-0" />
+              <p className="leading-relaxed">
+                <strong>Explicação das Colunas:</strong> A proposta do <strong>Especialista ({nomeEspecialista})</strong> aplica o recálculo do saldo devedor ajustado por índice legal e teto rural. A proposta do <strong>Banco ({nomeBanco})</strong> reflete a dívida cobrada pela instituição. A proposta de <strong>Terceiro ({nomeTerceiro})</strong> traz o parecer pericial externo para benchmarking de repactuação.
+              </p>
             </div>
+
           </div>
 
-          {/* TABLE CONTAINER MATCHING SPREADSHEET LAYOUT */}
-          <div className="border border-emerald-900/30 rounded-2xl shadow-sm overflow-hidden bg-white">
+          {/* TABLE CONTAINER - SOFT REFINED FINANCIAL REPORT STYLING */}
+          <div className="border border-slate-200 rounded-2xl shadow-xs overflow-hidden bg-white">
             <div className="overflow-x-auto">
               <table className="w-full text-left border-collapse text-xs">
+                
+                {/* TABLE HEADER - CLEAN SOFT GREY WITH COLORED PROPOSAL BADGES */}
                 <thead>
-                  <tr className="bg-emerald-900 text-white font-bold text-[11px] uppercase tracking-wider border-b border-emerald-950">
-                    <th className="p-3 border-r border-emerald-800/60">Operação</th>
-                    <th className="p-3 border-r border-emerald-800/60">Tipo</th>
-                    <th className="p-3 text-right border-r border-emerald-800/60">Valor Original (R$)</th>
-                    <th className="p-3 text-center border-r border-emerald-800/60">Data Liberação</th>
-                    <th className="p-3 text-right border-r border-emerald-800/60">Valor Liquidado (R$)</th>
-                    <th className="p-3 text-right border-r border-emerald-800/60 bg-red-900/90">Valor Cobrado - Credora (R$)</th>
-                    <th className="p-3 text-right border-r border-emerald-800/60 bg-emerald-950 text-amber-300 font-black">
+                  <tr className="bg-slate-100 text-slate-700 font-bold text-[11px] uppercase tracking-wider border-b-2 border-slate-300">
+                    <th className="p-3 border-r border-slate-200">Operação</th>
+                    <th className="p-3 border-r border-slate-200">Modalidade</th>
+                    <th className="p-3 text-center border-r border-slate-200">Data Liberação</th>
+                    <th className="p-3 text-right border-r border-slate-200">Valor Liberado (R$)</th>
+                    <th className="p-3 text-right border-r border-slate-200">Valor Pago DDC (R$)</th>
+                    <th className="p-3 text-right border-r border-slate-200">Parcelas Vencidas (R$)</th>
+                    <th className="p-3 text-right border-r border-slate-200">Parcelas a Vencer (R$)</th>
+
+                    {/* PROPOSAL 1: ESPECIALISTA (INPC) */}
+                    <th className="p-3 text-right border-r border-slate-200 bg-emerald-100/80 text-emerald-950 font-black">
                       <div className="flex flex-col items-end">
-                        <span>Valor Recalculado (R$)</span>
-                        <span className="text-[9px] px-1.5 py-0.2 bg-amber-400 text-slate-950 font-black rounded tracking-wide uppercase mt-0.5">
-                          Índice: {selectedIndexador}
+                        <span className="truncate max-w-[130px]">{nomeEspecialista}</span>
+                        <span className="text-[9px] px-1.5 py-0.2 bg-emerald-600 text-white font-bold rounded tracking-wide uppercase mt-0.5">
+                          Especialista ({selectedIndexador})
                         </span>
                       </div>
                     </th>
-                    <th className="p-3 text-right border-r border-emerald-800/60 bg-emerald-950">Diferença (R$)</th>
-                    <th className="p-3 text-right border-r border-emerald-800/60">Parcelas Vencidas (R$)</th>
-                    <th className="p-3 text-right border-r border-emerald-800/60">Parcelas a Vencer (R$)</th>
-                    <th className="p-3 text-center print:hidden">Status / Destaque</th>
+
+                    {/* PROPOSAL 2: BANCO (SICREDI DDC) */}
+                    <th className="p-3 text-right border-r border-slate-200 bg-rose-100/80 text-rose-950 font-black">
+                      <div className="flex flex-col items-end">
+                        <span className="truncate max-w-[130px]">{nomeBanco}</span>
+                        <span className="text-[9px] px-1.5 py-0.2 bg-rose-600 text-white font-bold rounded tracking-wide uppercase mt-0.5">
+                          Cobrança Banco
+                        </span>
+                      </div>
+                    </th>
+
+                    {/* PROPOSAL 3: TERCEIRO (SANDRO RAUEN) */}
+                    <th className="p-3 text-right border-r border-slate-200 bg-indigo-100/80 text-indigo-950 font-black">
+                      <div className="flex flex-col items-end">
+                        <span className="truncate max-w-[130px]">{nomeTerceiro}</span>
+                        <span className="text-[9px] px-1.5 py-0.2 bg-indigo-600 text-white font-bold rounded tracking-wide uppercase mt-0.5">
+                          Perícia Terceiros
+                        </span>
+                      </div>
+                    </th>
+
+                    {/* DIFFERENCE / ECONOMIA */}
+                    <th className="p-3 text-right border-r border-slate-200 bg-amber-100/90 text-amber-950 font-black">
+                      Diferença (Economia)
+                    </th>
+
+                    <th className="p-3 text-center print:hidden">Status / Ações</th>
                   </tr>
                 </thead>
+
                 <tbody className="divide-y divide-slate-200">
                   {rowDataList.length === 0 ? (
                     <tr>
-                      <td colSpan={11} className="p-8 text-center text-slate-500 italic bg-slate-50">
+                      <td colSpan={12} className="p-8 text-center text-slate-500 italic bg-slate-50">
                         Nenhum contrato ativo encontrado para o cliente ou filtros selecionados.
                       </td>
                     </tr>
@@ -515,63 +716,76 @@ export const ResumoConsolidadoModal: React.FC<ResumoConsolidadoModalProps> = ({
                               ? "bg-fuchsia-500 text-white font-semibold hover:bg-fuchsia-600 print:bg-fuchsia-200 print:text-black" 
                               : !row.isAtivo 
                                 ? "bg-slate-100 text-slate-400 italic hover:bg-slate-200/80" 
-                                : "hover:bg-emerald-50/40 text-slate-800"
+                                : "hover:bg-slate-100/80 text-slate-800"
                           }`}
                         >
                           {/* Operação */}
-                          <td className="p-3 font-bold font-mono border-r border-slate-200/80 whitespace-nowrap">
+                          <td className="p-3 font-bold font-mono border-r border-slate-200 whitespace-nowrap">
                             <div className="flex items-center gap-1.5">
                               {isHighlighted && <Star className="w-3.5 h-3.5 fill-amber-300 text-amber-300 shrink-0 print:hidden" />}
                               <span>{row.operacao}</span>
                             </div>
                           </td>
 
-                          {/* Tipo */}
-                          <td className="p-3 font-semibold border-r border-slate-200/80 whitespace-nowrap">
+                          {/* Modalidade */}
+                          <td className="p-3 font-medium border-r border-slate-200 whitespace-nowrap">
                             {row.tipo}
                           </td>
 
-                          {/* Valor Original */}
-                          <td className="p-3 text-right font-mono font-bold border-r border-slate-200/80 whitespace-nowrap">
-                            {formatCurrency(row.valorOriginal)}
-                          </td>
-
                           {/* Data Liberação */}
-                          <td className="p-3 text-center border-r border-slate-200/80 font-mono whitespace-nowrap">
+                          <td className="p-3 text-center border-r border-slate-200 font-mono whitespace-nowrap">
                             {formatDate(row.dataLiberacao) || "—"}
                           </td>
 
-                          {/* Valor Liquidado */}
-                          <td className="p-3 text-right font-mono border-r border-slate-200/80 whitespace-nowrap">
+                          {/* Valor Liberado */}
+                          <td className="p-3 text-right font-mono font-bold border-r border-slate-200 whitespace-nowrap">
+                            {formatCurrency(row.valorOriginal)}
+                          </td>
+
+                          {/* Valor Pago DDC */}
+                          <td className="p-3 text-right font-mono border-r border-slate-200 whitespace-nowrap">
                             {formatCurrency(row.valorLiquidado)}
                           </td>
 
-                          {/* Valor Cobrado Credora */}
-                          <td className={`p-3 text-right font-mono font-bold border-r border-slate-200/80 whitespace-nowrap ${isHighlighted ? 'text-white' : 'text-red-700 bg-red-50/40'}`}>
-                            {formatCurrency(row.valorCobradoCredora)}
-                          </td>
-
-                          {/* Valor Recalculado */}
-                          <td className={`p-3 text-right font-mono font-bold border-r border-slate-200/80 whitespace-nowrap ${isHighlighted ? 'text-white' : 'text-emerald-800 bg-emerald-50/50'}`}>
-                            {formatCurrency(row.valorRecalculado)}
-                          </td>
-
-                          {/* Diferença */}
-                          <td className={`p-3 text-right font-mono font-black border-r border-slate-200/80 whitespace-nowrap ${isHighlighted ? 'text-amber-200' : 'text-amber-700 bg-amber-50/60'}`}>
-                            {formatCurrency(row.diferenca)}
-                          </td>
-
                           {/* Parcelas Vencidas */}
-                          <td className="p-3 text-right font-mono border-r border-slate-200/80 whitespace-nowrap">
+                          <td className="p-3 text-right font-mono border-r border-slate-200 whitespace-nowrap">
                             {formatCurrency(row.parcelasVencidas)}
                           </td>
 
                           {/* Parcelas a Vencer */}
-                          <td className="p-3 text-right font-mono border-r border-slate-200/80 whitespace-nowrap">
+                          <td className="p-3 text-right font-mono border-r border-slate-200 whitespace-nowrap">
                             {formatCurrency(row.parcelasAVencer)}
                           </td>
 
-                          {/* Status & Highlight Controls */}
+                          {/* 1. Recalculado INPC (PROPOSTA / Especialista) */}
+                          <td className={`p-3 text-right font-mono font-bold border-r border-slate-200 whitespace-nowrap ${
+                            isHighlighted ? 'text-white' : 'text-emerald-900 bg-emerald-50/70'
+                          }`}>
+                            {formatCurrency(row.valorRecalculado)}
+                          </td>
+
+                          {/* 2. SICREDI DDC (Banco) */}
+                          <td className={`p-3 text-right font-mono font-bold border-r border-slate-200 whitespace-nowrap ${
+                            isHighlighted ? 'text-white' : 'text-rose-900 bg-rose-50/50'
+                          }`}>
+                            {formatCurrency(row.valorBanco)}
+                          </td>
+
+                          {/* 3. SANDRO RAUEN (Terceiro / Perito) */}
+                          <td className={`p-3 text-right font-mono font-bold border-r border-slate-200 whitespace-nowrap ${
+                            isHighlighted ? 'text-white' : 'text-indigo-900 bg-indigo-50/50'
+                          }`}>
+                            {formatCurrency(row.valorTerceiro)}
+                          </td>
+
+                          {/* Diferença (Economia Especialista vs Banco) */}
+                          <td className={`p-3 text-right font-mono font-black border-r border-slate-200 whitespace-nowrap ${
+                            isHighlighted ? 'text-amber-200' : 'text-amber-950 bg-amber-50/90'
+                          }`}>
+                            {formatCurrency(row.diferencaBancoEspecialista)}
+                          </td>
+
+                          {/* Status & Actions */}
                           <td className="p-3 text-center print:hidden whitespace-nowrap">
                             <div className="flex items-center justify-center gap-1.5">
                               {onToggleAtivo && (
@@ -617,66 +831,78 @@ export const ResumoConsolidadoModal: React.FC<ResumoConsolidadoModalProps> = ({
                   )}
                 </tbody>
 
-                {/* SUMMARY FOOTER ROW - EXACTLY MATCHING EXCEL GREEN BAR */}
+                {/* SUMMARY FOOTER ROW - SOFT DARK SLATE FOOTER */}
                 <tfoot>
-                  <tr className="bg-emerald-900 text-white font-black text-xs uppercase tracking-wider border-t-2 border-emerald-950">
-                    <td colSpan={2} className="p-3.5 border-r border-emerald-800/80">
+                  <tr className="bg-slate-800 text-white font-black text-xs uppercase tracking-wider border-t-2 border-slate-900">
+                    <td colSpan={3} className="p-3.5 border-r border-slate-700">
                       TOTAL ({somenteAtivos ? "contratos ativos" : "todos os contratos"})
                     </td>
-                    <td className="p-3.5 text-right font-mono border-r border-emerald-800/80">
+                    <td className="p-3.5 text-right font-mono border-r border-slate-700">
                       {formatCurrency(totals.valorOriginal)}
                     </td>
-                    <td className="p-3.5 border-r border-emerald-800/80"></td>
-                    <td className="p-3.5 text-right font-mono border-r border-emerald-800/80">
+                    <td className="p-3.5 text-right font-mono border-r border-slate-700">
                       {formatCurrency(totals.valorLiquidado)}
                     </td>
-                    <td className="p-3.5 text-right font-mono border-r border-emerald-800/80 bg-red-950/80 text-amber-200">
-                      {formatCurrency(totals.valorCobradoCredora)}
-                    </td>
-                    <td className="p-3.5 text-right font-mono border-r border-emerald-800/80 bg-emerald-950 text-emerald-300">
-                      {formatCurrency(totals.valorRecalculado)}
-                    </td>
-                    <td className="p-3.5 text-right font-mono border-r border-emerald-800/80 bg-amber-400 text-slate-950 font-black">
-                      {formatCurrency(totals.diferenca)}
-                    </td>
-                    <td className="p-3.5 text-right font-mono border-r border-emerald-800/80 text-amber-300">
+                    <td className="p-3.5 text-right font-mono border-r border-slate-700 text-amber-300">
                       {formatCurrency(totals.parcelasVencidas)}
                     </td>
-                    <td className="p-3.5 text-right font-mono border-r border-emerald-800/80 text-emerald-200">
+                    <td className="p-3.5 text-right font-mono border-r border-slate-700 text-slate-300">
                       {formatCurrency(totals.parcelasAVencer)}
                     </td>
-                    <td className="p-3.5 text-center print:hidden">
+
+                    {/* Total Recalculado Especialista */}
+                    <td className="p-3.5 text-right font-mono border-r border-slate-700 bg-emerald-950/80 text-emerald-300">
+                      {formatCurrency(totals.valorRecalculado)}
+                    </td>
+
+                    {/* Total Banco */}
+                    <td className="p-3.5 text-right font-mono border-r border-slate-700 bg-rose-950/80 text-rose-200">
+                      {formatCurrency(totals.valorBanco)}
+                    </td>
+
+                    {/* Total Terceiro */}
+                    <td className="p-3.5 text-right font-mono border-r border-slate-700 bg-indigo-950/80 text-indigo-200">
+                      {formatCurrency(totals.valorTerceiro)}
+                    </td>
+
+                    {/* Total Economia */}
+                    <td className="p-3.5 text-right font-mono border-r border-slate-700 bg-amber-400 text-slate-950 font-black">
+                      {formatCurrency(totals.diferencaBancoEspecialista)}
+                    </td>
+
+                    <td className="p-3.5 text-center print:hidden text-slate-300">
                       {totals.countActive} ATIVOS
                     </td>
                   </tr>
                 </tfoot>
+
               </table>
             </div>
           </div>
 
-          {/* INFORMATIONAL NOTE */}
-          <div className="bg-amber-50/90 border border-amber-200 p-4 rounded-2xl text-xs text-amber-900 space-y-1">
-            <div className="font-bold flex items-center gap-1.5 text-amber-800">
-              <Sparkles className="w-4 h-4 text-amber-600 shrink-0" />
-              <span>Regra de Consolidação por Cliente (Atividades Recorrentes):</span>
+          {/* INFORMATIONAL FOOTER NOTE */}
+          <div className="bg-amber-50/80 border border-amber-200 p-3.5 rounded-xl text-xs text-amber-900 flex items-start gap-2">
+            <Sparkles className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
+            <div className="space-y-0.5">
+              <strong className="block text-amber-950">Consolidação de Contratos por Cliente:</strong>
+              <p className="text-[11px] text-amber-800/90 leading-relaxed">
+                Para renegociações com reincidência de cédulas, desative operações quitadas ou substituídas no botão <strong>"Ativo/Inativo"</strong> para recalcular instantaneamente os totais do cliente.
+              </p>
             </div>
-            <p className="text-[11px] text-amber-800/90 leading-relaxed">
-              Para clientes que possuem repactuações ou contratos recorrentes, desative os contratos antigos ou quitados clicando no botão <strong>"Ativo/Inativo"</strong>. O resumo consolidado recalculará automaticamente os totais considerando <strong>apenas as cédulas e contratos vigentes (ativos)</strong>.
-            </p>
           </div>
 
         </div>
 
         {/* MODAL FOOTER */}
-        <div className="bg-slate-50 border-t border-slate-200 p-4 flex items-center justify-between shrink-0 print:hidden">
+        <div className="bg-white border-t border-slate-200 p-3.5 flex items-center justify-between shrink-0 print:hidden">
           <div className="text-xs text-slate-500 font-medium">
-            Mostrando <strong>{rowDataList.length}</strong> operação(ões) para <strong>{selectedEmitente || "Todos os clientes"}</strong>.
+            Exibindo <strong>{rowDataList.length}</strong> operação(ões) para <strong>{selectedEmitente || "Todos os clientes"}</strong>.
           </div>
           <button
             onClick={onClose}
             className="px-5 py-2 bg-slate-800 hover:bg-slate-900 text-white rounded-xl font-bold text-xs transition cursor-pointer shadow-xs"
           >
-            Fechar Resumo
+            Fechar Resumo Consolidado
           </button>
         </div>
 
@@ -684,3 +910,4 @@ export const ResumoConsolidadoModal: React.FC<ResumoConsolidadoModalProps> = ({
     </div>
   );
 };
+

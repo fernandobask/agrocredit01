@@ -3,7 +3,7 @@ import {
   QueueTaskItem, 
   subscribeToQueueTasks, 
   processSingleQueueItem,
-  updateQueueTaskStatus 
+  retryQueueTask
 } from "../lib/queueService";
 
 export function useQueueWorker(autoStart: boolean = true) {
@@ -18,9 +18,16 @@ export function useQueueWorker(autoStart: boolean = true) {
   useEffect(() => {
     const unsubscribe = subscribeToQueueTasks((fetchedTasks) => {
       setTasks(fetchedTasks);
+      // Manter currentTask sincronizado com atualizações em tempo real das etapas
+      if (currentTask) {
+        const updated = fetchedTasks.find(t => t.id === currentTask.id);
+        if (updated) {
+          setCurrentTask(updated);
+        }
+      }
     });
     return () => unsubscribe();
-  }, []);
+  }, [currentTask]);
 
   // Função para processar o próximo item pendente da fila
   const processNextPendingTask = useCallback(async () => {
@@ -41,7 +48,7 @@ export function useQueueWorker(autoStart: boolean = true) {
     } catch (err) {
       console.error("Erro inesperado no trabalhador de fila:", err);
     } finally {
-      // Pause 2.5s between queue items to prevent burst rate-limiting (429) on Gemini API
+      // Pause 2.5s entre tarefas para respeitar cota do Gemini
       await new Promise(res => setTimeout(res, 2500));
       isProcessingRef.current = false;
       setIsProcessing(false);
@@ -60,6 +67,11 @@ export function useQueueWorker(autoStart: boolean = true) {
     }
   }, [tasks, autoStart, processNextPendingTask]);
 
+  // Função utilitária para tentar novamente uma tarefa específica
+  const retryTask = useCallback(async (taskId: string, simulationId: string) => {
+    await retryQueueTask(taskId, simulationId);
+  }, []);
+
   // Métricas da fila
   const pendingCount = tasks.filter(t => t.status === "pendente").length;
   const processingCount = tasks.filter(t => t.status === "processando").length;
@@ -70,12 +82,14 @@ export function useQueueWorker(autoStart: boolean = true) {
     tasks,
     isProcessing,
     currentTask,
+    currentStep: currentTask?.currentStep || (isProcessing ? "Processando" : "Ocioso"),
     lastLog,
     pendingCount,
     processingCount,
     doneCount,
     errorCount,
     totalCount: tasks.length,
-    processNextPendingTask
+    processNextPendingTask,
+    retryTask
   };
 }

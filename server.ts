@@ -234,14 +234,15 @@ async function callGeminiWithFallback(
   }
 ) {
   const modelsToTry = [
-    "gemini-3.6-flash",
-    "gemini-3.1-flash-lite",
-    "gemini-flash-latest"
+    "gemini-2.5-flash",
+    "gemini-2.0-flash",
+    "gemini-1.5-flash",
+    "gemini-2.5-pro"
   ];
   let lastError: any = null;
 
   for (const model of modelsToTry) {
-    const maxRetries = 3;
+    const maxRetries = 2;
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
       try {
         console.log(`[Gemini API] Attempting generateContent with model: ${model} (attempt ${attempt}/${maxRetries})...`);
@@ -266,20 +267,26 @@ async function callGeminiWithFallback(
         lastError = error;
         const errorMsg = error.message || String(error);
         const status = error.status || error.code;
+        const isQuotaExceeded = errorMsg.includes("exceeded your current quota") || errorMsg.includes("quota");
         const isTransient = status === 503 || status === 429 || errorMsg.includes("503") || errorMsg.includes("429") || errorMsg.includes("UNAVAILABLE") || errorMsg.includes("RESOURCE_EXHAUSTED");
 
-        console.warn(`[Gemini API] Failed with model ${model} (attempt ${attempt}/${maxRetries}):`, errorMsg.slice(0, 200));
+        console.warn(`[Gemini API] Failed with model ${model} (attempt ${attempt}/${maxRetries}): ${errorMsg.slice(0, 150)}`);
+
+        // If hard quota for this model is exceeded, immediately skip to next model in list
+        if (isQuotaExceeded) {
+          console.warn(`[Gemini API] Quota limit hit for model ${model}. Switching to next available model...`);
+          break;
+        }
 
         if (isTransient && attempt < maxRetries) {
-          // Parse recommended retry delay or use minimum 3s backoff for 429/RESOURCE_EXHAUSTED
-          let backoffMs = Math.max(3000, attempt * 2500);
+          let backoffMs = Math.max(2000, attempt * 2000);
           const retryInMatch = errorMsg.match(/retry in (\d+(\.\d+)?)(ms|s)/i);
           if (retryInMatch) {
             const val = parseFloat(retryInMatch[1]);
             const unit = retryInMatch[3].toLowerCase();
             const delayMs = unit === "s" ? val * 1000 : val;
             if (!isNaN(delayMs) && delayMs > 0) {
-              backoffMs = Math.max(backoffMs, Math.ceil(delayMs) + 1000); // 1s buffer
+              backoffMs = Math.max(backoffMs, Math.ceil(delayMs) + 1000);
             }
           }
 

@@ -10,11 +10,40 @@ export interface AuxiliaryDriveFile {
   fileData?: string; // Base64 content for local file uploads
 }
 
+export type ProcessingStep =
+  | 'Pendente'
+  | 'Iniciando'
+  | 'Baixando'
+  | 'Analisando DDCs'
+  | 'Analisando com IA'
+  | 'Mesclando Dados'
+  | 'Salvando Resultados'
+  | 'Concluído'
+  | 'Erro';
+
+export interface TaskLogEntry {
+  timestamp: string;
+  step: ProcessingStep;
+  message: string;
+}
+
+export interface PartialTaskData {
+  downloadedBase64?: string;
+  downloadedMime?: string;
+  auxiliaryDocsProcessed?: any[];
+  extractedGeminiData?: any;
+  mergedData?: any;
+}
+
 export interface QueueTaskItem {
   id: string;
   simulationId: string;
   contractNumber: string;
   status: 'pendente' | 'processando' | 'concluido' | 'erro';
+  currentStep?: ProcessingStep;
+  completedSteps?: ProcessingStep[];
+  executionLogs?: TaskLogEntry[];
+  partialData?: PartialTaskData;
   taskType?: 'full_contract' | 'doc_analysis';
   driveFileId?: string;
   driveFileName?: string;
@@ -371,6 +400,73 @@ export async function enqueueContractProcessing(params: {
 }
 
 /**
+ * Registrar avanço de etapa com log detalhado e dados parciais para retomada
+ */
+export async function updateTaskExecutionStep(
+  taskId: string,
+  simulationId: string,
+  step: ProcessingStep,
+  message: string,
+  extraPartialData?: PartialTaskData,
+  status: QueueTaskItem['status'] = 'processando'
+) {
+  const timestamp = new Date().toISOString();
+  const logEntry: TaskLogEntry = { timestamp, step, message };
+
+  if (db) {
+    try {
+      const taskRef = doc(db, "fila_processamento", taskId);
+      const taskSnap = await getDoc(taskRef);
+      const currentTaskData = taskSnap.exists() ? taskSnap.data() : {};
+
+      const existingLogs: TaskLogEntry[] = currentTaskData.executionLogs || [];
+      const updatedLogs = [...existingLogs, logEntry];
+
+      const existingCompletedSteps: ProcessingStep[] = currentTaskData.completedSteps || [];
+      const updatedCompletedSteps = existingCompletedSteps.includes(step)
+        ? existingCompletedSteps
+        : [...existingCompletedSteps, step];
+
+      let updatedPartialData = currentTaskData.partialData || {};
+      if (extraPartialData) {
+        const safeExtra: Record<string, any> = {};
+        for (const [k, v] of Object.entries(extraPartialData)) {
+          if (typeof v === 'string' && v.length > 600000) {
+            // Ignora base64 gigantes no partialData para evitar estourar limite de 1MB do documento Firestore
+            continue;
+          }
+          safeExtra[k] = v;
+        }
+        updatedPartialData = { ...updatedPartialData, ...safeExtra };
+      }
+
+      const taskUpdatePayload = sanitizeFirestoreData({
+        status,
+        currentStep: step,
+        completedSteps: updatedCompletedSteps,
+        executionLogs: updatedLogs,
+        partialData: updatedPartialData,
+        updatedAt: timestamp,
+        errorMessage: status === 'erro' ? message : null
+      });
+
+      await setDoc(taskRef, taskUpdatePayload, { merge: true });
+
+      // Sincronizar status na coleção de simulações
+      const simRef = doc(db, "simulations", simulationId);
+      await setDoc(simRef, sanitizeFirestoreData({
+        processingStatus: status,
+        currentStep: step,
+        lastLogMessage: message,
+        updatedAt: timestamp
+      }), { merge: true });
+    } catch (err) {
+      console.warn(`[QueueService] Erro ao registrar etapa "${step}" na tarefa ${taskId}:`, err);
+    }
+  }
+}
+
+/**
  * Atualiza o status da tarefa na fila e sincroniza no contrato.
  */
 export async function updateQueueTaskStatus(
@@ -395,19 +491,21 @@ export async function updateQueueTaskStatus(
 }
 
 /**
- * Reprocessa uma tarefa da fila em caso de erro ou falha temporária.
+ * Reprocessa uma tarefa da fila em caso de erro ou falha temporária, mantendo dados parciais.
  */
 export async function retryQueueTask(taskId: string, simulationId: string) {
   if (!db) return;
   const now = new Date().toISOString();
   await setDoc(doc(db, "fila_processamento", taskId), {
     status: "pendente",
+    currentStep: "Pendente",
     errorMessage: null,
     updatedAt: now
   }, { merge: true });
 
   await setDoc(doc(db, "simulations", simulationId), {
     processingStatus: "pendente",
+    currentStep: "Pendente",
     updatedAt: now
   }, { merge: true });
 }
@@ -578,52 +676,60 @@ export async function processBatchInSubBatches<T>(
 }
 
 /**
- * Processa um único item da fila por vez (Download + DDCs + Gemini Flash 3.6 + Merge)
+ * Processa um único item da fila por vez com etapas rastreáveis (Download -> DDCs -> IA -> Merge -> Salvar)
+ * e suporte a retomada em caso de interrupção.
  */
 export async function processSingleQueueItem(
   task: QueueTaskItem,
   onLog?: (msg: string) => void
 ): Promise<boolean> {
-  const log = (msg: string) => {
-    console.log(`[Fila ${task.contractNumber}] ${msg}`);
-    if (onLog) onLog(msg);
+  const logStep = async (
+    step: ProcessingStep,
+    msg: string,
+    extraPartialData?: PartialTaskData,
+    status: QueueTaskItem['status'] = 'processando'
+  ) => {
+    console.log(`[Fila ${task.contractNumber}] [${step}] ${msg}`);
+    if (onLog) onLog(`[${step}] ${msg}`);
+    await updateTaskExecutionStep(task.id, task.simulationId, step, msg, extraPartialData, status);
   };
 
-  log(`🚀 Iniciando processamento em segundo plano (${task.taskType === 'doc_analysis' ? 'Análise de Doc' : 'Contrato Integrado'}) "${task.contractNumber}" (Task ID: ${task.id})...`);
+  await logStep(
+    'Iniciando',
+    `🚀 Iniciando processamento (${task.taskType === 'doc_analysis' ? 'Análise de Doc' : 'Contrato CPR Integrado'}) "${task.contractNumber}" (Task ID: ${task.id})...`
+  );
 
   try {
-    // 1. Atualizar status para 'processando'
-    await updateQueueTaskStatus(task.id, task.simulationId, "processando", {
-      attempts: (task.attempts || 0) + 1
-    });
-
     if (db) {
-      await setDoc(doc(db, "simulations", task.simulationId), {
-        name: `Contrato CPR ${task.contractNumber} - (Analisando com Gemini Flash 3.6...)`,
-        updatedAt: new Date().toISOString()
-      }, { merge: true });
+      await updateDoc(doc(db, "fila_processamento", task.id), {
+        attempts: (task.attempts || 0) + 1
+      }).catch(() => {});
     }
 
-    // 2. Se for uma análise individual de documento auxiliar / DDC
+    // ==========================================
+    // FLUXO A: Análise de Documento Auxiliar (Doc Analysis)
+    // ==========================================
     if (task.taskType === "doc_analysis" || task.docItem) {
-      log(`📄 Analisando documento auxiliar em segundo plano para simulação ${task.simulationId}...`);
-      let extractedData: any = null;
+      let extractedData: any = task.partialData?.extractedGeminiData || null;
 
-      if (task.fileData) {
+      if (!extractedData && task.fileData) {
+        await logStep('Analisando com IA', `📄 Analisando documento auxiliar via Gemini Flash 3.6...`);
         try {
           extractedData = await callAnalyzeContractWithRetryAndBackoff({
             fileData: task.fileData,
             mimeType: task.fileMimeType || "application/pdf",
             fileName: task.fileName || task.docItem?.fileName || "documento_auxiliar.pdf",
-            onLog: log
+            onLog: (m) => logStep('Analisando com IA', m)
           });
-          log(`✨ Análise Gemini Flash 3.6 concluída com sucesso para o documento auxiliar.`);
+          await logStep('Analisando com IA', `✨ Extração de dados do documento auxiliar concluída com sucesso.`, { extractedGeminiData: extractedData });
         } catch (err: any) {
-          log(`⚠️ Exceção na IA para doc auxiliar (${err.message}). Prosseguindo com dados atuais.`);
+          await logStep('Analisando com IA', `⚠️ Falha temporária na leitura IA do doc auxiliar (${err.message}). Prosseguindo com dados salvos.`);
         }
+      } else if (extractedData) {
+        await logStep('Analisando com IA', `⏩ [Retomada] Análise IA de doc auxiliar já concluída previamente. Reutilizando resultado.`);
       }
 
-      // Buscar a simulação atual para fazer a mesclagem
+      await logStep('Mesclando Dados', `🔄 Mesclando dados do documento auxiliar na simulação existente...`);
       let currentContractData: any = null;
       let existingSim: any = null;
 
@@ -635,11 +741,13 @@ export async function processSingleQueueItem(
         }
       }
 
+      await logStep('Salvando Resultados', `💾 Atualizando contrato e salvando laudo de auditoria no banco...`);
       if (extractedData && currentContractData) {
         const merged = mergeExtractedContractData(currentContractData, extractedData);
         if (db) {
-          await setDoc(doc(db, "simulations", task.simulationId), {
+          await setDoc(doc(db, "simulations", task.simulationId), sanitizeFirestoreData({
             processingStatus: "concluido",
+            currentStep: "Concluído",
             contractData: merged,
             contrato: merged,
             updatedAt: new Date().toISOString(),
@@ -652,29 +760,30 @@ export async function processSingleQueueItem(
                 details: `Documento auxiliar "${task.fileName}" analisado e mesclado via Fila de Processamento.`
               }
             ]
-          }, { merge: true });
+          }), { merge: true });
         }
       } else if (db) {
         await setDoc(doc(db, "simulations", task.simulationId), {
           processingStatus: "concluido",
+          currentStep: "Concluído",
           updatedAt: new Date().toISOString()
         }, { merge: true });
       }
 
-      await updateQueueTaskStatus(task.id, task.simulationId, "concluido", {
-        errorMessage: null
-      });
-
-      log(`🎉 Análise de documento auxiliar "${task.id}" concluída com sucesso!`);
+      await logStep('Concluído', `🎉 Análise de documento auxiliar "${task.fileName}" finalizada com sucesso!`, {}, 'concluido');
       return true;
     }
 
-    // 3. Processamento de contrato completo (Main + Auxiliary DDCs)
-    let mainFileBase64 = task.fileData || "";
-    let mainFileMime = task.fileMimeType || task.driveMimeType || "application/pdf";
+    // ==========================================
+    // FLUXO B: Processamento Completo de Contrato CPR (Full Contract)
+    // ==========================================
+
+    // ETAPA 1: Baixando Arquivo Principal
+    let mainFileBase64 = task.fileData || task.partialData?.downloadedBase64 || "";
+    let mainFileMime = task.fileMimeType || task.partialData?.downloadedMime || task.driveMimeType || "application/pdf";
 
     if (!mainFileBase64 && task.driveFileId) {
-      log(`⬇️ Baixando arquivo principal do Drive (${task.driveFileName || task.driveFileId})...`);
+      await logStep('Baixando', `⬇️ Baixando arquivo principal do Google Drive (${task.driveFileName || task.driveFileId})...`);
       try {
         const res = await fetch("/api/drive-download", {
           method: "POST",
@@ -689,26 +798,34 @@ export async function processSingleQueueItem(
           const data = await res.json();
           mainFileBase64 = data.base64;
           mainFileMime = data.mimeType || mainFileMime;
-          log(`✅ Download do arquivo principal concluído.`);
+          await logStep('Baixando', `✅ Download do arquivo principal do Google Drive concluído com sucesso.`, {
+            downloadedBase64: mainFileBase64.length < 600000 ? mainFileBase64 : undefined,
+            downloadedMime: mainFileMime
+          });
+        } else {
+          throw new Error(`Falha no download do Drive (HTTP ${res.status})`);
         }
       } catch (dlErr: any) {
-        log(`⚠️ Erro ao baixar do Drive: ${dlErr.message}`);
+        await logStep('Baixando', `⚠️ Aviso: Não foi possível baixar do Drive (${dlErr.message}). Prosseguindo com dados cadastrados.`);
       }
+    } else if (mainFileBase64) {
+      await logStep('Baixando', `⏩ [Retomada] Arquivo principal já carregado na memória/cache local. Avançando...`);
     }
 
-    const attachedDocs: any[] = [];
-    if (task.auxiliaryFiles && task.auxiliaryFiles.length > 0) {
-      log(`📎 Processando ${task.auxiliaryFiles.length} documento(s) auxiliar(es) DDC...`);
+    // ETAPA 2: Processando Documentos Auxiliares (DDCs)
+    let attachedDocs: any[] = task.partialData?.auxiliaryDocsProcessed || [];
+    if (attachedDocs.length === 0 && task.auxiliaryFiles && task.auxiliaryFiles.length > 0) {
+      await logStep('Analisando DDCs', `📎 Processando e anexando ${task.auxiliaryFiles.length} documento(s) DDC vinculado(s)...`);
       for (const aux of task.auxiliaryFiles) {
         try {
           let auxBase64 = aux.fileData || "";
           let auxMime = aux.mimeType || "application/pdf";
-          if (!auxBase64 && aux.id) {
+          if (!auxBase64 && aux.driveFileId) {
             const auxRes = await fetch("/api/drive-download", {
               method: "POST",
               headers: { "Content-Type": "application/json" },
               body: JSON.stringify({
-                fileId: aux.id,
+                fileId: aux.driveFileId,
                 accessToken: task.accessToken,
                 mimeType: aux.mimeType
               })
@@ -730,29 +847,37 @@ export async function processSingleQueueItem(
             mimeType: auxMime,
             uploadedAt: new Date().toISOString()
           });
-          log(`✅ DDC "${aux.name}" anexado.`);
+          await logStep('Analisando DDCs', `✅ DDC "${aux.name}" anexado e verificado.`);
         } catch (auxErr: any) {
-          log(`⚠️ Erro ao anexar DDC "${aux.name}": ${auxErr.message}`);
+          await logStep('Analisando DDCs', `⚠️ Erro ao processar DDC "${aux.name}": ${auxErr.message}`);
         }
       }
+      await logStep('Analisando DDCs', `✨ ${attachedDocs.length} DDC(s) integrados ao contrato.`, { auxiliaryDocsProcessed: attachedDocs });
+    } else if (attachedDocs.length > 0) {
+      await logStep('Analisando DDCs', `⏩ [Retomada] ${attachedDocs.length} DDC(s) já integrados na execução anterior.`);
     }
 
-    let parsedGeminiData: any = null;
-    if (mainFileBase64) {
-      log(`🤖 Executando análise e auditoria com Gemini Flash 3.6...`);
+    // ETAPA 3: Análise e Auditoria com Gemini Flash 3.6
+    let parsedGeminiData: any = task.partialData?.extractedGeminiData || null;
+    if (!parsedGeminiData && mainFileBase64) {
+      await logStep('Analisando com IA', `🤖 Executando leitura OCR, extração e auditoria com Gemini Flash 3.6...`);
       try {
         parsedGeminiData = await callAnalyzeContractWithRetryAndBackoff({
           fileData: mainFileBase64,
           mimeType: mainFileMime,
           fileName: task.driveFileName || task.fileName || task.contractNumber,
-          onLog: log
+          onLog: (m) => logStep('Analisando com IA', m)
         });
-        log(`✨ Análise IA concluída com sucesso para "${task.contractNumber}"!`);
+        await logStep('Analisando com IA', `✨ Extração e auditoria IA concluídas para o contrato "${task.contractNumber}"!`, { extractedGeminiData: parsedGeminiData });
       } catch (aiErr: any) {
-        log(`⚠️ Exceção na chamada de IA (${aiErr.message}). Mantendo dados calculados.`);
+        await logStep('Analisando com IA', `⚠️ Exceção na IA Gemini (${aiErr.message}). Mantendo dados padrão do contrato.`);
       }
+    } else if (parsedGeminiData) {
+      await logStep('Analisando com IA', `⏩ [Retomada] Leitura e auditoria com Gemini IA já concluídas previamente. Reutilizando resultado.`);
     }
 
+    // ETAPA 4: Mesclagem de Dados do Contrato
+    await logStep('Mesclando Dados', `🔄 Mesclando taxas, prazos, emissor e cronograma do contrato CPR ${task.contractNumber}...`);
     const defaultContractData = {
       numero: parsedGeminiData?.numero || task.contractNumber,
       modalidade: parsedGeminiData?.modalidade || "Cédula de Produto Rural (CPR)",
@@ -782,10 +907,13 @@ export async function processSingleQueueItem(
     const finalEmitente = finalContractData.emitente || "JULINERE GOULART BENTOS";
     const finalNumber = finalContractData.numero || task.contractNumber;
 
+    // ETAPA 5: Salvando no Banco Firestore
+    await logStep('Salvando Resultados', `💾 Gravando laudo do contrato e atualizando simulação "${finalNumber}" no Firestore...`);
     const finalSimulation = {
       id: task.simulationId,
       name: `Contrato CPR ${finalNumber} - ${finalEmitente}`,
       processingStatus: "concluido",
+      currentStep: "Concluído",
       contractData: finalContractData,
       contrato: finalContractData,
       associatedDocuments: attachedDocs,
@@ -795,37 +923,20 @@ export async function processSingleQueueItem(
           timestamp: new Date().toISOString(),
           action: "fila_item_concluido",
           userName: task.userName || "Analista",
-          details: `Fila: Item "${finalNumber}" concluído e auditado com sucesso via Gemini Flash 3.6 com ${attachedDocs.length} DDC(s) anexados.`
+          details: `Fila: Item "${finalNumber}" concluído e auditado via Gemini Flash 3.6 com ${attachedDocs.length} DDC(s) anexados.`
         }
       ]
     };
 
     if (db) {
-      await setDoc(doc(db, "simulations", task.simulationId), finalSimulation, { merge: true });
+      await setDoc(doc(db, "simulations", task.simulationId), sanitizeFirestoreData(finalSimulation), { merge: true });
     }
 
-    await updateQueueTaskStatus(task.id, task.simulationId, "concluido", {
-      errorMessage: null
-    });
-
-    log(`🎉 Tarefa da fila "${task.id}" [${task.contractNumber}] concluída com sucesso!`);
+    await logStep('Concluído', `🎉 Tarefa da fila "${task.id}" [${task.contractNumber}] finalizada com sucesso!`, {}, 'concluido');
     return true;
   } catch (err: any) {
     const errorMsg = err?.message || String(err);
-    log(`❌ Erro no processamento da tarefa "${task.id}": ${errorMsg}`);
-
-    await updateQueueTaskStatus(task.id, task.simulationId, "erro", {
-      errorMessage: errorMsg
-    });
-
-    if (db) {
-      await setDoc(doc(db, "simulations", task.simulationId), {
-        processingStatus: "erro",
-        name: `Contrato CPR ${task.contractNumber} - (Erro no processamento)`,
-        updatedAt: new Date().toISOString()
-      }, { merge: true });
-    }
-
+    await logStep('Erro', `❌ Erro na execução da tarefa "${task.id}": ${errorMsg}`, {}, 'erro');
     return false;
   }
 }

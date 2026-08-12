@@ -102,11 +102,13 @@ import { TaxasManualModal } from "./components/TaxasManualModal";
 import { DocumentViewerModal } from "./components/DocumentViewerModal";
 import { ResumoConsolidadoModal } from "./components/ResumoConsolidadoModal";
 import { LocalBatchModal } from "./components/LocalBatchModal";
+import { QueueStatusModal } from "./components/QueueStatusModal";
+import { VirtualizedContractsList } from "./components/VirtualizedContractsList";
 import { useQueueWorker } from "./hooks/useQueueWorker";
 import { enqueueDocAnalysisTask } from "./lib/queueService";
 import { auth, loginWithGoogle, loginAnonymously, loginAnonymouslyWithName, checkRedirectLoginResult, logout, db, handleFirestoreError, OperationType, getAccessToken, sanitizeFirestoreData } from "./firebase";
 import { onAuthStateChanged, User } from "firebase/auth";
-import { collection, doc, setDoc, getDocs, deleteDoc, query, where, updateDoc } from "firebase/firestore";
+import { collection, doc, setDoc, getDocs, deleteDoc, query, where, updateDoc, onSnapshot } from "firebase/firestore";
 
 import ReactMarkdown from "react-markdown";
 
@@ -425,7 +427,16 @@ export default function App() {
   };
 
   // Saved Simulations State
-  const [savedSimulations, setSavedSimulations] = useState<any[]>([]);
+  const [savedSimulations, setSavedSimulations] = useState<any[]>(() => {
+    try {
+      const cached = localStorage.getItem("cached_simulations_v1");
+      if (cached) {
+        const parsed = JSON.parse(cached);
+        if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+      }
+    } catch (e) {}
+    return [];
+  });
   const [searchQuery, setSearchQuery] = useState("");
   const [emitenteFilter, setEmitenteFilter] = useState("");
   const [contractScopeFilter, setContractScopeFilter] = useState<"all" | "mine">("all");
@@ -586,6 +597,7 @@ export default function App() {
 
   // State for Local Computer Batch Import Modal
   const [isLocalBatchModalOpen, setIsLocalBatchModalOpen] = useState<boolean>(false);
+  const [isQueueModalOpen, setIsQueueModalOpen] = useState<boolean>(false);
 
   // Background Queue Worker for Gemini Flash 3.6 processing
   const queueWorker = useQueueWorker(true);
@@ -742,9 +754,11 @@ export default function App() {
       }
     }
 
-    setLoadingSimulations(true);
+    if (savedSimulations.length === 0) {
+      setLoadingSimulations(true);
+    }
+
     try {
-      // Single unified database query for team/organization
       const q = query(collection(db, "simulations"));
       const snapshot = await getDocs(q);
       
@@ -762,7 +776,6 @@ export default function App() {
         };
       });
 
-      // Auto-seed initial CPR contract if database is completely empty
       if (sims.length === 0 && currentUser) {
         const defaultSimData = {
           userId: currentUser.uid,
@@ -805,27 +818,69 @@ export default function App() {
 
       sims.sort((a: any, b: any) => getTime(b.createdAt) - getTime(a.createdAt));
       setSavedSimulations(sims);
+      try {
+        localStorage.setItem("cached_simulations_v1", JSON.stringify(sims));
+      } catch (e) {}
     } catch (err) {
       console.error("Erro ao buscar simulações do Firestore:", err);
-      setSavedSimulations([{
-        id: "cpr-julinere-fallback",
-        name: "Contrato CPR - Julinere Goulart Bentos",
-        version: 1,
-        createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString(),
-        contractData: DEFAULT_CONTRATO,
-        contrato: DEFAULT_CONTRATO,
-        scenariosData: DEFAULT_CENARIOS,
-        createdByName: "Analista Financeiro"
-      }]);
     } finally {
       setLoadingSimulations(false);
     }
   };
 
+  // Real-time synchronization for instantaneous contract updates
   useEffect(() => {
-    fetchSavedSimulations();
-  }, [user, activeNav]);
+    let currentUser = user || auth.currentUser;
+    if (!currentUser) {
+      loginAnonymouslyWithName("Analista Financeiro")
+        .then(cred => setUser(cred.user))
+        .catch(e => console.warn("Auto login error:", e));
+    }
+
+    if (savedSimulations.length === 0) {
+      setLoadingSimulations(true);
+    }
+
+    const q = query(collection(db, "simulations"));
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      let sims = snapshot.docs.map(docItem => {
+        const data = docItem.data();
+        const cData = data.contractData || data.contrato || DEFAULT_CONTRATO;
+        const sData = data.scenariosData || data.cenarios || DEFAULT_CENARIOS;
+        return {
+          id: docItem.id,
+          ...data,
+          contractData: cData,
+          contrato: cData,
+          scenariosData: sData,
+          cenarios: sData
+        };
+      });
+
+      const getTime = (val: any) => {
+        if (!val) return 0;
+        if (typeof val === 'string' || typeof val === 'number') return new Date(val).getTime();
+        if (val.toDate && typeof val.toDate === 'function') return val.toDate().getTime();
+        if (val.seconds) return val.seconds * 1000;
+        return 0;
+      };
+
+      sims.sort((a: any, b: any) => getTime(b.createdAt) - getTime(a.createdAt));
+
+      if (sims.length > 0) {
+        setSavedSimulations(sims);
+        try {
+          localStorage.setItem("cached_simulations_v1", JSON.stringify(sims));
+        } catch (e) {}
+      }
+      setLoadingSimulations(false);
+    }, (err) => {
+      console.error("Erro no listener Firestore onSnapshot:", err);
+      setLoadingSimulations(false);
+    });
+
+    return () => unsubscribe();
+  }, [user?.uid]);
 
   // Contract Verification (Laudo)
   const [verifyingContract, setVerifyingContract] = useState(false);
@@ -3143,19 +3198,48 @@ export default function App() {
                               );
                             }
 
-                            if (contractViewMode === "table") {
-                              return (
-                                <div className="bg-white border border-slate-200 rounded-xl shadow-xs overflow-hidden">
-                                  <div className="overflow-x-auto">
-                                    <table className="w-full text-left border-collapse">
-                                      <thead>
-                                        <tr className="bg-slate-100/90 border-b border-slate-200 text-[11px] font-bold text-slate-600 uppercase tracking-wider">
-                                          <th className="p-3">Nº Contrato / Nome</th>
-                                          <th className="p-3">Emitente & Credor</th>
-                                          <th className="p-3 text-right">Valor Principal</th>
-                                          <th className="p-3">Taxa & Indexador</th>
-                                          <th className="p-3">Cadastrado por</th>
-                                          <th className="p-3 text-center">Ações</th>
+                            return (
+                              <VirtualizedContractsList
+                                items={filteredSimulations}
+                                viewMode={contractViewMode}
+                                expandedDocsSimId={expandedDocsSimId}
+                                setExpandedDocsSimId={setExpandedDocsSimId}
+                                newDocForm={newDocForm}
+                                setNewDocForm={setNewDocForm}
+                                analyzingDocId={analyzingDocId}
+                                user={user}
+                                formatCurrency={formatCurrency}
+                                formatPercentage={formatPercentage}
+                                onLoadToSimulator={(sim) => {
+                                  const cData = sim.contractData || sim.contrato;
+                                  const sData = sim.scenariosData || sim.cenarios;
+                                  setContrato(cData);
+                                  if (sData) setCenarios(sData);
+                                  if (sim.laudo) setLaudo(sim.laudo);
+                                  else setLaudo(null);
+                                  setLoadedSimulationId(sim.id);
+                                  setActiveNav("dashboard");
+                                  showToast(`Contrato Nº ${cData?.numero || "S/N"} carregado!`, "success");
+                                }}
+                                onToggleStatus={(simId, currentStatus) => handleToggleContractStatus(simId, currentStatus)}
+                                onRemoveSimulation={(simId) => {
+                                  showConfirm("Deseja realmente remover esta simulação e todos os seus históricos?", async () => {
+                                    try {
+                                      await deleteDoc(doc(db, "simulations", simId));
+                                      fetchSavedSimulations();
+                                      showToast("Simulação removida com sucesso!", "success");
+                                    } catch (err) {
+                                      handleFirestoreError(err, OperationType.DELETE, `simulations/${simId}`);
+                                    }
+                                  });
+                                }}
+                                onSetViewingDocument={(docItem) => setViewingDocument(docItem)}
+                                onAnalyzeAndFill={(simId, docItem) => handleAnalyzeAndFill(simId, docItem)}
+                                onDeleteAssociatedDoc={(simId, docId) => handleDeleteAssociatedDocument(simId, docId)}
+                                renderAttachDocumentForm={(simId) => renderAttachDocumentForm(simId)}
+                              />
+                            );
+                          })()}                                <th className="p-3 text-center">Ações</th>
                                         </tr>
                                       </thead>
                                       <tbody className="divide-y divide-slate-100 text-xs">
@@ -3380,7 +3464,7 @@ export default function App() {
 
                             // Cards View mode
                             return (
-                              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                              <div className="grid grid-cols-1 md:grid-cols-2 gap-3.5 sm:gap-4 w-full px-0">
                                 {filteredSimulations.map(sim => {
                                   const cData = sim.contractData || sim.contrato;
                                   const sData = sim.scenariosData || sim.cenarios;
@@ -3392,37 +3476,37 @@ export default function App() {
                                   const hasLogs = sim.auditLogs && sim.auditLogs.length > 0;
 
                                   return (
-                                    <div key={sim.id} className={`p-5 border rounded-xl hover:border-emerald-300 transition-all flex flex-col gap-3 bg-white ${(isDocsExpanded || isHistoryExpanded || isLogsExpanded) ? 'border-emerald-400 shadow-md col-span-1 md:col-span-2' : 'border-slate-200 shadow-sm'}`}>
-                                      <div className="flex justify-between items-start gap-2">
-                                        <div className="space-y-1">
-                                          <div className="flex items-center gap-2">
-                                            <span className="font-bold text-slate-800 text-sm md:text-base">{sim.name}</span>
-                                            <span className="px-2 py-0.5 bg-emerald-50 text-emerald-700 rounded-full font-bold text-[10px] uppercase tracking-wider border border-emerald-200">
+                                    <div key={sim.id} className={`p-3.5 sm:p-5 w-full border rounded-xl hover:border-emerald-300 transition-all flex flex-col gap-3 bg-white ${(isDocsExpanded || isHistoryExpanded || isLogsExpanded) ? 'border-emerald-400 shadow-md col-span-1 md:col-span-2' : 'border-slate-200 shadow-sm'}`}>
+                                      <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-2 w-full">
+                                        <div className="space-y-1 min-w-0 w-full sm:w-auto">
+                                          <div className="flex flex-wrap items-center gap-1.5 sm:gap-2">
+                                            <span className="font-bold text-slate-800 text-sm md:text-base break-words">{sim.name}</span>
+                                            <span className="px-2 py-0.5 bg-emerald-50 text-emerald-700 rounded-full font-bold text-[10px] uppercase tracking-wider border border-emerald-200 shrink-0">
                                               v{sim.version || 1}
                                             </span>
                                           </div>
                                           <p className="text-[11px] text-slate-400">Criado em: {new Date(sim.createdAt).toLocaleDateString("pt-BR")}</p>
                                         </div>
-                                        <span className="text-[11px] font-mono bg-slate-100 text-slate-600 px-2 py-1 rounded">
+                                        <span className="text-[11px] font-mono bg-slate-100 text-slate-600 px-2.5 py-1 rounded shrink-0 self-start sm:self-auto">
                                           Nº {cData?.numero || "S/N"}
                                         </span>
                                       </div>
 
-                                      <div className="grid grid-cols-2 gap-2 text-xs bg-slate-50 p-3 rounded-lg border border-slate-100 text-slate-600">
-                                        <div><strong>Emitente:</strong> <span className="text-slate-800 font-medium">{cData?.emitente || "Não informado"}</span></div>
-                                        <div><strong>Credor:</strong> <span className="text-slate-800 font-medium">{cData?.credor || "Não informado"}</span></div>
+                                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs bg-slate-50 p-3 rounded-lg border border-slate-100 text-slate-600 w-full">
+                                        <div><strong>Emitente:</strong> <span className="text-slate-800 font-medium break-words">{cData?.emitente || "Não informado"}</span></div>
+                                        <div><strong>Credor:</strong> <span className="text-slate-800 font-medium break-words">{cData?.credor || "Não informado"}</span></div>
                                         <div><strong>Principal:</strong> <span className="text-slate-800 font-medium">{formatCurrency(cData?.valorPrincipal || 0)}</span></div>
                                         <div><strong>Taxa Original:</strong> <span className="text-slate-800 font-medium">{formatPercentage(cData?.taxaJurosAnual || 0)} + {cData?.indexadorOriginal}</span></div>
                                       </div>
 
-                                      <div className="flex flex-wrap items-center gap-3 text-[11px] text-slate-500 bg-emerald-50/50 p-2 rounded-lg border border-emerald-100/60">
-                                        <div className="flex items-center gap-1.5">
+                                      <div className="flex flex-wrap items-center gap-3 text-[11px] text-slate-500 bg-emerald-50/50 p-2.5 rounded-lg border border-emerald-100/60 w-full min-w-0">
+                                        <div className="flex items-center gap-1.5 min-w-0 w-full">
                                           <UserCheck className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
-                                          <span>Cadastrado por: <strong className="text-slate-800 font-bold">{sim.createdByName || sim.createdByEmail || "Analista"}</strong></span>
+                                          <span className="truncate">Cadastrado por: <strong className="text-slate-800 font-bold">{sim.createdByName || sim.createdByEmail || "Analista"}</strong></span>
                                         </div>
                                       </div>
 
-                                      <div className="flex flex-wrap items-center gap-2 pt-1.5 border-t border-slate-100">
+                                      <div className="flex flex-wrap items-center gap-2 pt-2 border-t border-slate-100 w-full">
                                         <button 
                                           onClick={() => {
                                             setContrato(cData);
@@ -3433,27 +3517,27 @@ export default function App() {
                                             setActiveNav("dashboard");
                                             showToast(`Contrato Nº ${cData?.numero || "S/N"} carregado!`, "success");
                                           }}
-                                          className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg font-bold text-xs transition flex items-center gap-1 cursor-pointer"
+                                          className="flex-1 sm:flex-none px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg font-bold text-xs transition flex items-center justify-center gap-1 cursor-pointer"
                                         >
                                           <FileText className="w-3.5 h-3.5"/> Carregar Simulador
                                         </button>
                                         <button
                                           onClick={() => setExpandedDocsSimId(isDocsExpanded ? null : sim.id)}
-                                          className={`px-3 py-1.5 rounded-lg font-bold text-xs transition flex items-center gap-1 cursor-pointer border ${isDocsExpanded ? 'bg-slate-800 text-white border-slate-800' : 'bg-slate-50 hover:bg-slate-100 text-slate-700 border-slate-200'}`}
+                                          className={`flex-1 sm:flex-none px-3 py-1.5 rounded-lg font-bold text-xs transition flex items-center justify-center gap-1 cursor-pointer border ${isDocsExpanded ? 'bg-slate-800 text-white border-slate-800' : 'bg-slate-50 hover:bg-slate-100 text-slate-700 border-slate-200'}`}
                                         >
                                           <FolderOpen className="w-3.5 h-3.5" />
                                           Documentos ({sim.associatedDocuments?.length || 0})
                                         </button>
                                         <button
                                           onClick={() => setExpandedDocsSimId(isLogsExpanded ? null : `${sim.id}_logs`)}
-                                          className={`px-3 py-1.5 rounded-lg font-bold text-xs transition flex items-center gap-1 cursor-pointer border ${isLogsExpanded ? 'bg-slate-800 text-white border-slate-800' : 'bg-slate-50 hover:bg-slate-100 text-slate-700 border-slate-200'}`}
+                                          className={`flex-1 sm:flex-none px-3 py-1.5 rounded-lg font-bold text-xs transition flex items-center justify-center gap-1 cursor-pointer border ${isLogsExpanded ? 'bg-slate-800 text-white border-slate-800' : 'bg-slate-50 hover:bg-slate-100 text-slate-700 border-slate-200'}`}
                                         >
                                           <ShieldCheck className="w-3.5 h-3.5 text-emerald-600" />
                                           Logs ({hasLogs ? sim.auditLogs.length : 0})
                                         </button>
                                         <button
                                           onClick={() => handleToggleContractStatus(sim.id, sim.ativo !== false)}
-                                          className={`px-3 py-1.5 rounded-lg text-xs font-bold transition flex items-center gap-1 cursor-pointer border ${
+                                          className={`px-3 py-1.5 rounded-lg text-xs font-bold transition flex items-center justify-center gap-1 cursor-pointer border ${
                                             sim.ativo !== false
                                               ? "bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border-emerald-200"
                                               : "bg-amber-50 hover:bg-amber-100 text-amber-700 border-amber-200"
@@ -5831,6 +5915,16 @@ export default function App() {
         user={user}
         onComplete={fetchSavedSimulations}
         showToast={showToast}
+      />
+
+      {/* Modal de Acompanhamento da Fila e Retomada por Etapas */}
+      <QueueStatusModal
+        isOpen={isQueueModalOpen}
+        onClose={() => setIsQueueModalOpen(false)}
+        tasks={queueWorker.tasks}
+        isProcessing={queueWorker.isProcessing}
+        currentTask={queueWorker.currentTask}
+        onRetryTask={queueWorker.retryTask}
       />
     </div>
   );
