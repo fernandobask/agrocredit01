@@ -680,147 +680,7 @@ export const ResumoConsolidadoModal: React.FC<ResumoConsolidadoModalProps> = ({
         {/* MAIN SCROLLABLE CONTENT */}
         <div className="p-4 sm:p-6 overflow-y-auto flex-1 space-y-5">
 
-          {/* CARD EXPLICATIVO - RESUMO COMPARATIVO ENTRE AS PROPOSTAS */}
-          <div className="bg-white border border-slate-200 rounded-2xl p-4 sm:p-5 shadow-xs space-y-4">
-            
-            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-slate-100 pb-3">
-              <div className="flex items-center gap-2">
-                <div className="p-1.5 bg-emerald-100 text-emerald-800 rounded-lg">
-                  <TrendingDown className="w-4 h-4" />
-                </div>
-                <div>
-                  <h3 className="text-sm sm:text-base font-bold text-slate-900">
-                    Resumo Comparativo de Propostas & Análise de Economia
-                  </h3>
-                  <p className="text-xs text-slate-500">
-                    Comparação direta entre as propostas do Especialista, do Banco e de Terceiros. Clique no nome ou nos valores para editá-los livremente.
-                  </p>
-                </div>
-              </div>
-
-              {totals.diferencaBancoEspecialista > 0 && (
-                <div className="px-3 py-1.5 bg-emerald-50 border border-emerald-200 rounded-xl flex items-center gap-2 text-xs font-bold text-emerald-800 shrink-0">
-                  <Sparkles className="w-4 h-4 text-emerald-600 shrink-0" />
-                  <span>Economia Estimada: <strong className="text-emerald-950 font-black">{formatCurrency(totals.diferencaBancoEspecialista)}</strong> ({percentEconomia}% menor)</span>
-                </div>
-              )}
-            </div>
-
-            {/* 3 PROPOSAL CARDS COMPARISON */}
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-3.5">
-              
-              {/* Card Proposta 1: Especialista */}
-              <div className="bg-emerald-50/70 border-2 border-emerald-300 rounded-xl p-4 flex flex-col justify-between gap-3 shadow-2xs relative overflow-hidden">
-                <div className="absolute top-0 right-0 bg-emerald-600 text-white font-bold text-[9px] uppercase px-2.5 py-0.5 rounded-bl-lg tracking-wider">
-                  Proposta Especialista
-                </div>
-                <div className="space-y-1">
-                  <input
-                    type="text"
-                    value={nomeEspecialista}
-                    onChange={(e) => setNomeEspecialista(e.target.value)}
-                    className="text-xs font-bold text-emerald-950 bg-transparent border-b border-dashed border-emerald-400 focus:outline-hidden w-full"
-                    title="Clique para editar este título"
-                  />
-                  <p className="text-xs text-emerald-700 leading-tight">
-                    Índice: <strong>{selectedIndexador}</strong> + Juros Legais Agrícolas (8% a.a.)
-                  </p>
-                </div>
-
-                <div className="pt-2 border-t border-emerald-200/80">
-                  <span className="text-[10px] text-emerald-800 uppercase font-bold block">Saldo Total Recalculado</span>
-                  <p className="text-lg sm:text-xl font-black text-emerald-950 font-mono mt-0.5">
-                    {formatCurrency(totals.valorRecalculado)}
-                  </p>
-                </div>
-
-                <div className="text-[11px] text-emerald-800 bg-white/80 border border-emerald-200 rounded-lg p-2 font-medium flex items-center justify-between">
-                  <span>Diferença vs Banco:</span>
-                  <strong className="text-emerald-900 font-bold font-mono">
-                    - {formatCurrency(totals.diferencaBancoEspecialista)}
-                  </strong>
-                </div>
-              </div>
-
-              {/* Card Proposta 2: Banco (SICREDI DDC) */}
-              <div className="bg-rose-50/60 border border-rose-200 rounded-xl p-4 flex flex-col justify-between gap-3 shadow-2xs relative">
-                <div className="absolute top-0 right-0 bg-rose-200 text-rose-900 font-bold text-[9px] uppercase px-2 py-0.5 rounded-bl-lg tracking-wider">
-                  Cobrança do Banco
-                </div>
-                <div className="space-y-1">
-                  <input
-                    type="text"
-                    value={nomeBanco}
-                    onChange={(e) => setNomeBanco(e.target.value)}
-                    className="text-xs font-bold text-rose-950 bg-transparent border-b border-dashed border-rose-400 focus:outline-hidden w-full"
-                    title="Clique para editar este título"
-                  />
-                  <p className="text-xs text-rose-800 leading-tight">
-                    Cobrança exigida pelo Banco com encargos do contrato original.
-                  </p>
-                </div>
-
-                <div className="pt-2 border-t border-rose-200/80">
-                  <span className="text-[10px] text-rose-800 uppercase font-bold block">Saldo Exigido pelo Banco</span>
-                  <p className="text-lg sm:text-xl font-black text-rose-950 font-mono mt-0.5">
-                    {formatCurrency(totals.valorBanco)}
-                  </p>
-                </div>
-
-                <div className="text-[11px] text-rose-900 bg-white/80 border border-rose-200 rounded-lg p-2 font-medium flex items-center justify-between">
-                  <span>Excesso sobre Recálculo:</span>
-                  <strong className="text-rose-950 font-bold font-mono">
-                    + {formatCurrency(totals.diferencaBancoEspecialista)}
-                  </strong>
-                </div>
-              </div>
-
-              {/* Card Proposta 3: Terceiro (SANDRO RAUEN) */}
-              <div className="bg-indigo-50/60 border border-indigo-200 rounded-xl p-4 flex flex-col justify-between gap-3 shadow-2xs relative">
-                <div className="absolute top-0 right-0 bg-indigo-200 text-indigo-950 font-bold text-[9px] uppercase px-2 py-0.5 rounded-bl-lg tracking-wider">
-                  Parecer de Terceiros
-                </div>
-                <div className="space-y-1">
-                  <input
-                    type="text"
-                    value={nomeTerceiro}
-                    onChange={(e) => setNomeTerceiro(e.target.value)}
-                    className="text-xs font-bold text-indigo-950 bg-transparent border-b border-dashed border-indigo-400 focus:outline-hidden w-full"
-                    title="Clique para editar este título"
-                  />
-                  <p className="text-xs text-indigo-800 leading-tight">
-                    Avaliação/parecer técnico alternativo de terceiros.
-                  </p>
-                </div>
-
-                <div className="pt-2 border-t border-indigo-200/80">
-                  <span className="text-[10px] text-indigo-800 uppercase font-bold block">Saldo Proposta Terceiro</span>
-                  <p className="text-lg sm:text-xl font-black text-indigo-950 font-mono mt-0.5">
-                    {formatCurrency(totals.valorTerceiro)}
-                  </p>
-                </div>
-
-                <div className="text-[11px] text-indigo-900 bg-white/80 border border-indigo-200 rounded-lg p-2 font-medium flex items-center justify-between">
-                  <span>Diferença vs Especialista:</span>
-                  <strong className="text-indigo-950 font-bold font-mono">
-                    + {formatCurrency(totals.diferencaTerceiroEspecialista)}
-                  </strong>
-                </div>
-              </div>
-
-            </div>
-
-            {/* BRIEF EXPLANATORY BANNER */}
-            <div className="bg-slate-50 border border-slate-200 rounded-xl p-3 text-xs text-slate-700 flex flex-col sm:flex-row items-start sm:items-center gap-2">
-              <Info className="w-4 h-4 text-emerald-600 shrink-0 mt-0.5 sm:mt-0" />
-              <p className="leading-relaxed">
-                <strong>Dica de Edição:</strong> Os nomes dos cabeçalhos das colunas (ex: <em>{nomeBanco}</em> e <em>{nomeTerceiro}</em>) e os valores de cada contrato podem ser **editados diretamente** na tabela abaixo ou nos campos acima. As economias e totais são recalculados em tempo real.
-              </p>
-            </div>
-
-          </div>
-
-          {/* TABLE CONTAINER - SOFT REFINED FINANCIAL REPORT STYLING */}
+          {/* 1. PLANILHA DE VISUALIZAÇÃO DOS CONTRATOS (TABELA PRINCIPAL PRIMEIRO) */}
           <div className="border border-slate-200 rounded-2xl shadow-xs overflow-hidden bg-white">
             <div className="overflow-x-auto">
               <table className="w-full text-left border-collapse text-xs">
@@ -1107,6 +967,146 @@ export const ResumoConsolidadoModal: React.FC<ResumoConsolidadoModalProps> = ({
 
               </table>
             </div>
+          </div>
+
+          {/* 2. SESSÃO: RESUMO COMPARATIVO DE PROPOSTAS & ANÁLISE DE ECONOMIA (AGORA ABAIXO DA PLANILHA) */}
+          <div className="bg-white border border-slate-200 rounded-2xl p-4 sm:p-5 shadow-xs space-y-4">
+            
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-slate-100 pb-3">
+              <div className="flex items-center gap-2">
+                <div className="p-1.5 bg-emerald-100 text-emerald-800 rounded-lg">
+                  <TrendingDown className="w-4 h-4" />
+                </div>
+                <div>
+                  <h3 className="text-sm sm:text-base font-bold text-slate-900">
+                    Resumo Comparativo de Propostas & Análise de Economia
+                  </h3>
+                  <p className="text-xs text-slate-500">
+                    Comparação direta entre as propostas do Especialista, do Banco e de Terceiros. Clique no nome ou nos valores para editá-los livremente.
+                  </p>
+                </div>
+              </div>
+
+              {totals.diferencaBancoEspecialista > 0 && (
+                <div className="px-3 py-1.5 bg-emerald-50 border border-emerald-200 rounded-xl flex items-center gap-2 text-xs font-bold text-emerald-800 shrink-0">
+                  <Sparkles className="w-4 h-4 text-emerald-600 shrink-0" />
+                  <span>Economia Estimada: <strong className="text-emerald-950 font-black">{formatCurrency(totals.diferencaBancoEspecialista)}</strong> ({percentEconomia}% menor)</span>
+                </div>
+              )}
+            </div>
+
+            {/* 3 PROPOSAL CARDS COMPARISON */}
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-3.5">
+              
+              {/* Card Proposta 1: Especialista */}
+              <div className="bg-emerald-50/70 border-2 border-emerald-300 rounded-xl p-4 flex flex-col justify-between gap-3 shadow-2xs relative overflow-hidden">
+                <div className="absolute top-0 right-0 bg-emerald-600 text-white font-bold text-[9px] uppercase px-2.5 py-0.5 rounded-bl-lg tracking-wider">
+                  Proposta Especialista
+                </div>
+                <div className="space-y-1">
+                  <input
+                    type="text"
+                    value={nomeEspecialista}
+                    onChange={(e) => setNomeEspecialista(e.target.value)}
+                    className="text-xs font-bold text-emerald-950 bg-transparent border-b border-dashed border-emerald-400 focus:outline-hidden w-full"
+                    title="Clique para editar este título"
+                  />
+                  <p className="text-xs text-emerald-700 leading-tight">
+                    Índice: <strong>{selectedIndexador}</strong> + Juros Legais Agrícolas (8% a.a.)
+                  </p>
+                </div>
+
+                <div className="pt-2 border-t border-emerald-200/80">
+                  <span className="text-[10px] text-emerald-800 uppercase font-bold block">Saldo Total Recalculado</span>
+                  <p className="text-lg sm:text-xl font-black text-emerald-950 font-mono mt-0.5">
+                    {formatCurrency(totals.valorRecalculado)}
+                  </p>
+                </div>
+
+                <div className="text-[11px] text-emerald-800 bg-white/80 border border-emerald-200 rounded-lg p-2 font-medium flex items-center justify-between">
+                  <span>Diferença vs Banco:</span>
+                  <strong className="text-emerald-900 font-bold font-mono">
+                    - {formatCurrency(totals.diferencaBancoEspecialista)}
+                  </strong>
+                </div>
+              </div>
+
+              {/* Card Proposta 2: Banco (SICREDI DDC) */}
+              <div className="bg-rose-50/60 border border-rose-200 rounded-xl p-4 flex flex-col justify-between gap-3 shadow-2xs relative">
+                <div className="absolute top-0 right-0 bg-rose-200 text-rose-900 font-bold text-[9px] uppercase px-2 py-0.5 rounded-bl-lg tracking-wider">
+                  Cobrança do Banco
+                </div>
+                <div className="space-y-1">
+                  <input
+                    type="text"
+                    value={nomeBanco}
+                    onChange={(e) => setNomeBanco(e.target.value)}
+                    className="text-xs font-bold text-rose-950 bg-transparent border-b border-dashed border-rose-400 focus:outline-hidden w-full"
+                    title="Clique para editar este título"
+                  />
+                  <p className="text-xs text-rose-800 leading-tight">
+                    Cobrança exigida pelo Banco com encargos do contrato original.
+                  </p>
+                </div>
+
+                <div className="pt-2 border-t border-rose-200/80">
+                  <span className="text-[10px] text-rose-800 uppercase font-bold block">Saldo Exigido pelo Banco</span>
+                  <p className="text-lg sm:text-xl font-black text-rose-950 font-mono mt-0.5">
+                    {formatCurrency(totals.valorBanco)}
+                  </p>
+                </div>
+
+                <div className="text-[11px] text-rose-900 bg-white/80 border border-rose-200 rounded-lg p-2 font-medium flex items-center justify-between">
+                  <span>Excesso sobre Recálculo:</span>
+                  <strong className="text-rose-950 font-bold font-mono">
+                    + {formatCurrency(totals.diferencaBancoEspecialista)}
+                  </strong>
+                </div>
+              </div>
+
+              {/* Card Proposta 3: Terceiro (SANDRO RAUEN) */}
+              <div className="bg-indigo-50/60 border border-indigo-200 rounded-xl p-4 flex flex-col justify-between gap-3 shadow-2xs relative">
+                <div className="absolute top-0 right-0 bg-indigo-200 text-indigo-950 font-bold text-[9px] uppercase px-2 py-0.5 rounded-bl-lg tracking-wider">
+                  Parecer de Terceiros
+                </div>
+                <div className="space-y-1">
+                  <input
+                    type="text"
+                    value={nomeTerceiro}
+                    onChange={(e) => setNomeTerceiro(e.target.value)}
+                    className="text-xs font-bold text-indigo-950 bg-transparent border-b border-dashed border-indigo-400 focus:outline-hidden w-full"
+                    title="Clique para editar este título"
+                  />
+                  <p className="text-xs text-indigo-800 leading-tight">
+                    Avaliação/parecer técnico alternativo de terceiros.
+                  </p>
+                </div>
+
+                <div className="pt-2 border-t border-indigo-200/80">
+                  <span className="text-[10px] text-indigo-800 uppercase font-bold block">Saldo Proposta Terceiro</span>
+                  <p className="text-lg sm:text-xl font-black text-indigo-950 font-mono mt-0.5">
+                    {formatCurrency(totals.valorTerceiro)}
+                  </p>
+                </div>
+
+                <div className="text-[11px] text-indigo-900 bg-white/80 border border-indigo-200 rounded-lg p-2 font-medium flex items-center justify-between">
+                  <span>Diferença vs Especialista:</span>
+                  <strong className="text-indigo-950 font-bold font-mono">
+                    + {formatCurrency(totals.diferencaTerceiroEspecialista)}
+                  </strong>
+                </div>
+              </div>
+
+            </div>
+
+            {/* BRIEF EXPLANATORY BANNER */}
+            <div className="bg-slate-50 border border-slate-200 rounded-xl p-3 text-xs text-slate-700 flex flex-col sm:flex-row items-start sm:items-center gap-2">
+              <Info className="w-4 h-4 text-emerald-600 shrink-0 mt-0.5 sm:mt-0" />
+              <p className="leading-relaxed">
+                <strong>Dica de Edição:</strong> Os nomes dos cabeçalhos das colunas (ex: <em>{nomeBanco}</em> e <em>{nomeTerceiro}</em>) e os valores de cada contrato podem ser **editados diretamente** na tabela acima ou nos campos dos cards. As economias e totais são recalculados em tempo real.
+              </p>
+            </div>
+
           </div>
 
           {/* INFORMATIONAL FOOTER NOTE */}
