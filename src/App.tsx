@@ -1353,7 +1353,7 @@ export default function App() {
                 differences: diffs
               });
               setAnalyzing(false);
-              // Do not change activeNav to dashboard, keep user in 'contratos' tab to resolve the conflict
+              setActiveNav("contratos");
             } else {
               setContrato(novoContrato);
               setSelectedFluxoCenario("original");
@@ -5498,6 +5498,116 @@ export default function App() {
         currentTask={queueWorker.currentTask}
         onRetryTask={queueWorker.retryTask}
       />
+
+      {/* Modal Global de Conflito de Contrato Duplicado */}
+      {duplicateConflict && (
+        <div className="fixed inset-0 bg-slate-900/80 backdrop-blur-sm flex items-center justify-center p-4 z-50 animate-fade-in">
+          <div className="bg-white rounded-2xl shadow-2xl border border-amber-200 max-w-2xl w-full overflow-hidden flex flex-col max-h-[90vh]">
+            <div className="bg-amber-500 text-white p-5 flex items-center justify-between border-b border-amber-600">
+              <div className="flex items-center gap-3">
+                <div className="p-2 bg-amber-600 rounded-xl">
+                  <AlertTriangle className="w-6 h-6 animate-pulse" />
+                </div>
+                <div>
+                  <h3 className="font-bold text-base md:text-lg text-white">⚠️ Cédula de Crédito / Contrato Duplicado Detectado</h3>
+                  <p className="text-xs text-amber-100">Um contrato idêntico ou com mesmo número já existe no banco de dados</p>
+                </div>
+              </div>
+              <button
+                onClick={() => setDuplicateConflict(null)}
+                className="text-amber-100 hover:text-white p-1 rounded-lg hover:bg-amber-600 transition cursor-pointer"
+                title="Descartar / Fechar"
+              >
+                <X className="w-6 h-6" />
+              </button>
+            </div>
+
+            <div className="p-6 overflow-y-auto space-y-4 text-slate-800">
+              <p className="text-sm">
+                O contrato número <strong className="text-amber-800 font-bold">{duplicateConflict.novoContrato.numero}</strong> já está cadastrado no sistema para o emitente <strong className="text-slate-900">{duplicateConflict.existingSim.contractData?.emitente || duplicateConflict.existingSim.contrato?.emitente || "Não informado"}</strong>.
+              </p>
+
+              <div className="bg-amber-50 border border-amber-200 rounded-xl p-4 space-y-2 text-xs">
+                <h4 className="font-bold text-amber-900 text-sm flex items-center gap-1.5">
+                  <Activity className="w-4 h-4 text-amber-600" />
+                  Diferenças identificadas entre os documentos:
+                </h4>
+                {duplicateConflict.differences.length === 0 ? (
+                  <p className="text-slate-600 italic">
+                    Os dados do contrato importado são idênticos aos salvos no banco de dados. Nenhuma divergência financeira ou de prazos foi encontrada.
+                  </p>
+                ) : (
+                  <ul className="list-disc pl-5 space-y-1 font-semibold text-amber-950">
+                    {duplicateConflict.differences.map((diff, i) => (
+                      <li key={i}>{diff}</li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+
+              {duplicateConflict.differences.length > 0 && (
+                <div>
+                  <label className="block text-xs font-bold text-slate-700 mb-1">
+                    Motivo da alteração (resumo histórico):
+                  </label>
+                  <input
+                    type="text"
+                    placeholder="Ex: Nova repactuação de juros ou correção pelo IPCA..."
+                    id="changeSummaryInputModalGlobal"
+                    className="w-full bg-slate-50 border border-slate-300 rounded-xl px-3 py-2 text-xs text-slate-900 focus:bg-white focus:outline-none focus:ring-2 focus:ring-amber-500 font-medium"
+                  />
+                </div>
+              )}
+            </div>
+
+            <div className="bg-slate-100 border-t border-slate-200 p-4 flex flex-wrap items-center justify-end gap-2">
+              <button
+                onClick={() => setDuplicateConflict(null)}
+                className="px-4 py-2.5 bg-slate-200 hover:bg-slate-300 text-slate-700 font-bold rounded-xl text-xs transition cursor-pointer"
+              >
+                Descartar Envio / Cancelar
+              </button>
+
+              {duplicateConflict.differences.length === 0 ? (
+                <>
+                  <button
+                    onClick={handleResolveKeepExisting}
+                    className="px-4 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded-xl text-xs transition cursor-pointer flex items-center gap-1.5 shadow-xs"
+                  >
+                    <FileText className="w-4 h-4" /> Carregar Registro Existente
+                  </button>
+                  <button
+                    onClick={() => {
+                      handleResolveNewVersion("Re-importação manual de documento idêntico");
+                    }}
+                    className="px-4 py-2.5 bg-slate-800 hover:bg-slate-900 text-white font-bold rounded-xl text-xs transition cursor-pointer"
+                  >
+                    Salvar como Nova Versão (v{(duplicateConflict.existingSim.version || 1) + 1})
+                  </button>
+                </>
+              ) : (
+                <>
+                  <button
+                    onClick={handleResolveOverwrite}
+                    className="px-4 py-2.5 bg-amber-600 hover:bg-amber-700 text-white font-bold rounded-xl text-xs transition cursor-pointer"
+                  >
+                    Sobrescrever Versão Atual
+                  </button>
+                  <button
+                    onClick={() => {
+                      const input = document.getElementById("changeSummaryInputModalGlobal") as HTMLInputElement;
+                      handleResolveNewVersion(input?.value || "Nova versão carregada manualmente");
+                    }}
+                    className="px-4 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded-xl text-xs transition cursor-pointer shadow-xs"
+                  >
+                    Salvar como Nova Versão (v{(duplicateConflict.existingSim.version || 1) + 1})
+                  </button>
+                </>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
