@@ -62,6 +62,8 @@ export interface Contrato {
   produto?: string;
   quantidade?: string;
   valorEmissao?: number;
+  statusPipeline?: 'em_trabalho' | 'em_renegociacao' | 'entregue' | 'arquivado';
+  dataEntrega?: string;
 }
 
 export interface ProjecaoParcela {
@@ -124,6 +126,7 @@ export interface DivergenciaItem {
   status: 'divergente' | 'conforme' | 'atencao';
   documentoAuxiliar: string; // e.g. "Demonstrativo de Evolução da Dívida"
   detalhe: string; // Description of the inconsistency or verification
+  fundamentacaoLegal?: string; // e.g. "Súmula 176 do STJ / Artigo 14 da Lei 4.829/65"
 }
 
 export interface Laudo {
@@ -143,6 +146,7 @@ export interface AssociatedDocument {
   notes?: string;
   fileData?: string;
   mimeType?: string;
+  contratoData?: any;
 }
 
 export interface ContractHistoryEntry {
@@ -152,3 +156,41 @@ export interface ContractHistoryEntry {
   changeSummary: string;
 }
 
+
+export interface SimulationDocument {
+  id?: string;
+  name: string;
+  
+  // Auditing / Ownership
+  userId?: string;
+  createdById?: string;
+  createdByName?: string;
+  createdByEmail?: string;
+  createdAt?: string;
+
+  updatedById?: string;
+  updatedByName?: string;
+  updatedByEmail?: string;
+  updatedAt?: string;
+
+  // Processing State (for queue processing)
+  processingStatus?: 'pendente' | 'em_andamento' | 'concluido' | 'erro';
+  currentStep?: string;
+
+  // Core Data
+  contractData: Contrato;
+  scenariosData?: SimuloCenario[];
+  
+  // Optional / Sub-modules
+  statusPipeline?: 'em_trabalho' | 'em_renegociacao' | 'entregue' | 'arquivado';
+  dataEntrega?: string;
+  laudo?: Laudo | null;
+  associatedDocuments?: AssociatedDocument[];
+  history?: ContractHistoryEntry[];
+  auditLogs?: AuditLogEntry[];
+  version?: number;
+  
+  // Legacy / fallback fields
+  contrato?: Contrato;
+  cenarios?: SimuloCenario[];
+}

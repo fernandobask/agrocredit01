@@ -35,7 +35,7 @@ export function AuthModal({ isOpen, onClose, onSuccess }: AuthModalProps) {
   const [activeTab, setActiveTab] = useState<"google" | "analista" | "email">("google");
   
   // Analista state
-  const [analistaName, setAnalistaName] = useState("Dr. Fernando / Perito Agro");
+  const [analistaName, setAnalistaName] = useState("Fernando Gomes Santos");
   const [loadingAnalista, setLoadingAnalista] = useState(false);
 
   // Email state
@@ -56,10 +56,8 @@ export function AuthModal({ isOpen, onClose, onSuccess }: AuthModalProps) {
     e.preventDefault();
     setLoadingAnalista(true);
     try {
-      const res = await loginAnonymouslyWithName(analistaName.trim() || "Analista Financeiro");
-      if (res?.user) {
-        onSuccess(`Acesso ativado com sucesso! Sessão iniciada como "${res.user.displayName || analistaName || 'Analista'}".`);
-      }
+      await loginAnonymouslyWithName(analistaName.trim() || "Analista Financeiro");
+      onSuccess(`Acesso ativado com sucesso! Sessão iniciada como "${analistaName || 'Analista'}".`);
       onClose();
     } catch (err: any) {
       console.error(err);
@@ -88,9 +86,7 @@ export function AuthModal({ isOpen, onClose, onSuccess }: AuthModalProps) {
       onClose();
     } catch (err: any) {
       console.error(err);
-      if (err.code === 'auth/operation-not-allowed') {
-        setEmailError("O provedor E-mail/Senha precisa ser ativado no Firebase Console (Authentication > Sign-in method). Alterne para a aba '1-Clique (Analista)' para entrar imediatamente!");
-      } else if (err.code === 'auth/wrong-password' || err.code === 'auth/invalid-credential') {
+      if (err.code === 'auth/wrong-password' || err.code === 'auth/invalid-credential') {
         setEmailError("Senha incorreta ou credenciais inválidas.");
       } else if (err.code === 'auth/weak-password') {
         setEmailError("A senha deve ter pelo menos 6 caracteres.");
@@ -115,14 +111,13 @@ export function AuthModal({ isOpen, onClose, onSuccess }: AuthModalProps) {
       }
     } catch (err: any) {
       console.error("Erro no login Google:", err);
-      if (err.code === 'auth/operation-not-allowed') {
-        setGoogleError("O provedor Google precisa ser ativado no Firebase Console (Authentication > Sign-in method > Google).");
-      } else if (err.code === 'auth/unauthorized-domain') {
-        setGoogleError("Este endereço/domínio não está cadastrado em Domínios Autorizados no Firebase Console (Authentication > Settings > Authorized domains).");
-      } else if (err.code === 'auth/popup-blocked' || err.code === 'auth/popup-closed-by-user') {
-        setGoogleError("O pop-up do Google foi fechado ou bloqueado pelo navegador. Permita pop-ups e tente novamente.");
+      const isDomainErr = err.code === 'auth/unauthorized-domain' || err.message?.includes('unauthorized-domain');
+      const isPopupErr = err.code === 'auth/popup-blocked' || err.code === 'auth/popup-closed-by-user' || err.message?.includes('popup');
+
+      if (isDomainErr || isPopupErr || window.self !== window.top) {
+        setGoogleError("O Google OAuth foi retido devido a restrições de pop-up no iframe de pré-visualização. DICA: Use o 'Acesso Rápido de Analista' acima para autenticar com 1 clique instantaneamente!");
       } else {
-        setGoogleError("Falha na autenticação Google: " + (err.message || err.code || err));
+        setGoogleError("Falha na autenticação Google: " + (err.message || err));
       }
     } finally {
       setLoadingGoogle(false);

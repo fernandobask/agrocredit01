@@ -648,42 +648,42 @@ export function SimuladorNegociacaoModal({
             initial={{ opacity: 0, scale: 0.96, y: 10 }}
             animate={{ opacity: 1, scale: 1, y: 0 }}
             exit={{ opacity: 0, scale: 0.96, y: 10 }}
-            className={`bg-white border border-slate-200 rounded-2xl shadow-2xl flex flex-col overflow-hidden transition-all duration-200 ${
+            className={`bg-slate-50 border border-slate-200 rounded-2xl shadow-2xl flex flex-col overflow-hidden text-slate-800 transition-all duration-200 ${
               isMaximized 
                 ? 'w-[99vw] h-[98vh] max-w-none max-h-none' 
                 : 'w-full max-w-7xl h-[92vh] max-h-[94vh]'
             }`}
           >
         {/* MODAL HEADER */}
-        <div className="p-4 sm:p-5 bg-gradient-to-r from-slate-900 via-slate-850 to-emerald-950 text-white flex flex-col sm:flex-row sm:items-center justify-between gap-4 shrink-0 shadow-md">
+        <div className="p-4 sm:p-5 bg-white text-slate-900 border-b border-slate-200 flex flex-col sm:flex-row sm:items-center justify-between gap-4 shrink-0 shadow-2xs">
           <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-xl bg-emerald-500/20 border border-emerald-500/30 flex items-center justify-center text-emerald-400 shrink-0">
-              <Calculator className="w-6 h-6" />
+            <div className="w-10 h-10 rounded-xl bg-emerald-100 border border-emerald-300 flex items-center justify-center text-emerald-800 shrink-0">
+              <Calculator className="w-5 h-5" />
             </div>
             <div>
               <div className="flex items-center gap-2">
-                <h2 className="text-lg font-bold text-white tracking-tight">
+                <h2 className="text-lg font-black text-slate-900 tracking-tight">
                   Simulador de Negociação e Repactuação
                 </h2>
-                <span className="px-2 py-0.5 bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 rounded text-[10px] font-extrabold uppercase tracking-wider">
+                <span className="px-2 py-0.5 bg-emerald-100 text-emerald-800 border border-emerald-300 rounded text-[10px] font-extrabold uppercase tracking-wider">
                   Proposta Flexível
                 </span>
               </div>
-              <p className="text-xs text-slate-300 mt-0.5">
-                Contrato Nº <span className="font-mono font-bold text-amber-300">{contrato.numero}</span> • Devedor: <span className="font-bold text-white">{contrato.emitente}</span>
+              <p className="text-xs text-slate-500 mt-0.5">
+                Contrato Nº <span className="font-mono font-bold text-slate-900">{contrato.numero}</span> • Devedor: <span className="font-bold text-slate-900">{contrato.emitente}</span>
               </p>
             </div>
           </div>
 
           <div className="flex items-center gap-2 self-end sm:self-auto">
             {savedSuccess && (
-              <span className="text-xs font-bold text-emerald-400 bg-emerald-950/80 px-2.5 py-1 rounded-lg border border-emerald-800 flex items-center gap-1">
-                <CheckCircle className="w-3.5 h-3.5" /> Salvo no Histórico!
+              <span className="text-xs font-bold text-emerald-800 bg-emerald-100 px-2.5 py-1 rounded-xl border border-emerald-300 flex items-center gap-1">
+                <CheckCircle className="w-3.5 h-3.5 text-emerald-600" /> Salvo no Histórico!
               </span>
             )}
             <button
               onClick={handleSave}
-              className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs rounded-lg transition flex items-center gap-1.5 cursor-pointer shadow-sm"
+              className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs rounded-xl transition flex items-center gap-1.5 cursor-pointer shadow-2xs"
               title="Salvar Proposta no Firestore"
             >
               <Save className="w-3.5 h-3.5" />
@@ -691,16 +691,16 @@ export function SimuladorNegociacaoModal({
             </button>
             <button
               onClick={() => setIsMaximized(!isMaximized)}
-              className="text-slate-400 hover:text-white p-1.5 sm:p-2 rounded-lg hover:bg-slate-800 transition cursor-pointer flex items-center gap-1 text-xs font-semibold"
+              className="p-2 text-slate-500 hover:text-slate-800 hover:bg-slate-100 rounded-xl transition cursor-pointer flex items-center gap-1 text-xs font-semibold"
               title={isMaximized ? "Janela Normal" : "Expandir Tela Cheia"}
             >
-              {isMaximized ? <Minimize2 className="w-4 h-4 text-emerald-400" /> : <Maximize2 className="w-4 h-4 text-emerald-400" />}
+              {isMaximized ? <Minimize2 className="w-4 h-4 text-emerald-700" /> : <Maximize2 className="w-4 h-4 text-emerald-700" />}
               <span className="hidden sm:inline">{isMaximized ? "Restaurar" : "Tela Cheia"}</span>
             </button>
             <button
               onClick={onClose}
-              className="p-1.5 text-slate-400 hover:text-white hover:bg-slate-800 rounded-lg transition cursor-pointer"
-              title="Fechar (Esc)"
+              className="p-2 text-slate-500 hover:text-red-600 hover:bg-red-50 rounded-xl transition cursor-pointer"
+              title="Fechar"
             >
               <X className="w-5 h-5" />
             </button>

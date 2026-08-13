@@ -4,79 +4,18 @@ service cloud.firestore {
     match /{document=**} {
       allow read, write: if false;
     }
-
     function isSignedIn() {
       return request.auth != null;
     }
-
-    function incoming() {
-      return request.resource.data;
-    }
-
-    function existing() {
-      return resource.data;
-    }
-
-    function isValidSimulation(data) {
-      return data.keys().hasAll(['userId', 'name', 'contractData', 'scenariosData', 'createdAt', 'updatedAt'])
-        && data.userId is string
-        && data.name is string && data.name.size() <= 250
-        && data.createdAt is string
-        && data.updatedAt is string;
-    }
-
     match /simulations/{simulationId} {
-      // Base única compartilhada para toda a equipe / organização
-      allow read: if isSignedIn();
-      
-      allow create: if isSignedIn()
-        && isValidSimulation(incoming());
-
-      allow update: if isSignedIn()
-        && isValidSimulation(incoming());
-
-      allow delete: if isSignedIn();
+      // Regra de segurança: Apenas usuários autenticados podem ler e escrever
+      allow read, write: if isSignedIn();
     }
-
-    function isValidProposal(data) {
-      return data.keys().hasAll(['id', 'userId', 'contratoNumero', 'emitente', 'proposalData', 'createdAt'])
-        && data.id is string
-        && data.userId is string
-        && data.contratoNumero is string
-        && data.emitente is string
-        && data.createdAt is string;
-    }
-
     match /propostas_negociacao/{proposalId} {
-      allow read: if isSignedIn();
-
-      allow create: if isSignedIn()
-        && isValidProposal(incoming());
-
-      allow update: if isSignedIn()
-        && isValidProposal(incoming());
-
-      allow delete: if isSignedIn();
+      allow read, write: if isSignedIn();
     }
-
-    function isValidQueueTask(data) {
-      return data.keys().hasAll(['simulationId', 'status', 'createdAt', 'updatedAt'])
-        && data.simulationId is string
-        && data.status is string
-        && data.createdAt is string
-        && data.updatedAt is string;
-    }
-
     match /fila_processamento/{taskId} {
-      allow read: if isSignedIn();
-
-      allow create: if isSignedIn()
-        && isValidQueueTask(incoming());
-
-      allow update: if isSignedIn()
-        && isValidQueueTask(incoming());
-
-      allow delete: if isSignedIn();
+      allow read, write: if isSignedIn();
     }
   }
 }

@@ -70,7 +70,7 @@ export interface QueueTaskItem {
 }
 
 /**
- * Função utilitária para mesclar dados extraídos pelo Gemini Flash 3.6 com o contrato existente
+ * Função utilitária para mesclar dados extraídos pelo Gemini 2.5 Flash com o contrato existente
  */
 export function mergeExtractedContractData(currentContract: any, extractedData: any) {
   if (!extractedData) return currentContract;
@@ -273,7 +273,7 @@ export async function enqueueDocAnalysisTask(params: {
     fileMimeType: params.docItem.mimeType || "application/pdf",
     docItem: params.docItem,
     userId: params.userId || "anonymous",
-    userName: params.userName || "Analista",
+    userName: params.userName || "Fernando Gomes Santos",
     userEmail: params.userEmail,
     createdAt: now,
     updatedAt: now,
@@ -341,15 +341,15 @@ export async function enqueueContractProcessing(params: {
     ativo: true,
     createdAt: now,
     updatedAt: now,
-    createdByEmail: params.userEmail || "Analista",
-    createdByName: params.userName || "Analista",
+    createdByEmail: params.userEmail || "fernandobask@gmail.com",
+    createdByName: params.userName || "Fernando Gomes Santos",
     createdByUid: params.userId || "anonymous",
     userId: params.userId || "anonymous",
     auditLogs: [
       {
         timestamp: now,
         action: "fila_agendada",
-        userName: params.userName || "Analista",
+        userName: params.userName || "Fernando Gomes Santos",
         details: `Agendado na coleção 'fila_processamento' com status "Pendente" (${fileNameDisplay})`
       }
     ]
@@ -524,7 +524,8 @@ export function subscribeToQueueTasks(callback: (tasks: QueueTaskItem[]) => void
     const list: QueueTaskItem[] = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as QueueTaskItem));
     callback(list);
   }, (err) => {
-    console.warn("Erro ao escutar fila_processamento:", err);
+    console.warn("Erro ao escutar fila_processamento (possível cota excedida):", err);
+    callback([]);
   });
 }
 
@@ -713,7 +714,7 @@ export async function processSingleQueueItem(
       let extractedData: any = task.partialData?.extractedGeminiData || null;
 
       if (!extractedData && task.fileData) {
-        await logStep('Analisando com IA', `📄 Analisando documento auxiliar via Gemini Flash 3.6...`);
+        await logStep('Analisando com IA', `📄 Analisando documento auxiliar via Gemini 2.5 Flash...`);
         try {
           extractedData = await callAnalyzeContractWithRetryAndBackoff({
             fileData: task.fileData,
@@ -857,10 +858,10 @@ export async function processSingleQueueItem(
       await logStep('Analisando DDCs', `⏩ [Retomada] ${attachedDocs.length} DDC(s) já integrados na execução anterior.`);
     }
 
-    // ETAPA 3: Análise e Auditoria com Gemini Flash 3.6
+    // ETAPA 3: Análise e Auditoria com Gemini 2.5 Flash
     let parsedGeminiData: any = task.partialData?.extractedGeminiData || null;
     if (!parsedGeminiData && mainFileBase64) {
-      await logStep('Analisando com IA', `🤖 Executando leitura OCR, extração e auditoria com Gemini Flash 3.6...`);
+      await logStep('Analisando com IA', `🤖 Executando leitura OCR, extração e auditoria com Gemini 2.5 Flash...`);
       try {
         parsedGeminiData = await callAnalyzeContractWithRetryAndBackoff({
           fileData: mainFileBase64,
@@ -881,30 +882,26 @@ export async function processSingleQueueItem(
     const defaultContractData = {
       numero: parsedGeminiData?.numero || task.contractNumber,
       modalidade: parsedGeminiData?.modalidade || "Cédula de Produto Rural (CPR)",
-      emitente: parsedGeminiData?.emitente || "JULINERE GOULART BENTOS",
-      credor: parsedGeminiData?.credor || "VALE DO CERRADO (SICREDI)",
+      emitente: parsedGeminiData?.emitente || "",
+      credor: parsedGeminiData?.credor || "",
       dataEmissao: parsedGeminiData?.dataEmissao || new Date().toISOString().split("T")[0],
       dataVencimento: parsedGeminiData?.dataVencimento || new Date(Date.now() + 365 * 24 * 3600 * 1000 * 3).toISOString().split("T")[0],
-      valorPrincipal: parsedGeminiData?.valorPrincipal || parsedGeminiData?.valorEmissao || 500000.00,
-      taxaJurosAnual: parsedGeminiData?.taxaJurosAnual || 3.70,
+      valorPrincipal: parsedGeminiData?.valorPrincipal || parsedGeminiData?.valorEmissao || 0,
+      taxaJurosAnual: parsedGeminiData?.taxaJurosAnual || 0,
       indexadorOriginal: parsedGeminiData?.indexador || parsedGeminiData?.indexadorOriginal || "CDI",
-      produto: parsedGeminiData?.produto || "SOJA A GRANEL",
-      quantidade: parsedGeminiData?.quantidade || "14640.36 SACA(S) DE 60 QUILOS",
-      valorEmissao: parsedGeminiData?.valorEmissao || parsedGeminiData?.valorPrincipal || 500000.00,
+      produto: parsedGeminiData?.produto || "",
+      quantidade: parsedGeminiData?.quantidade || "",
+      valorEmissao: parsedGeminiData?.valorEmissao || parsedGeminiData?.valorPrincipal || 0,
       cronogramaParcelas: (parsedGeminiData?.cronogramaParcelas && parsedGeminiData.cronogramaParcelas.length > 0)
         ? parsedGeminiData.cronogramaParcelas
-        : [
-            { data: "2025-10-07", percentualAmortizacao: 33.33, paga: false, valorAmortizadoPago: 0 },
-            { data: "2026-10-07", percentualAmortizacao: 50.00, paga: false, valorAmortizadoPago: 0 },
-            { data: "2027-10-07", percentualAmortizacao: 100.00, paga: false, valorAmortizadoPago: 0 }
-          ]
+        : []
     };
 
     const finalContractData = parsedGeminiData
       ? mergeExtractedContractData(defaultContractData, parsedGeminiData)
       : defaultContractData;
 
-    const finalEmitente = finalContractData.emitente || "JULINERE GOULART BENTOS";
+    const finalEmitente = finalContractData.emitente || "Emitente Não Identificado";
     const finalNumber = finalContractData.numero || task.contractNumber;
 
     // ETAPA 5: Salvando no Banco Firestore
@@ -923,7 +920,7 @@ export async function processSingleQueueItem(
           timestamp: new Date().toISOString(),
           action: "fila_item_concluido",
           userName: task.userName || "Analista",
-          details: `Fila: Item "${finalNumber}" concluído e auditado via Gemini Flash 3.6 com ${attachedDocs.length} DDC(s) anexados.`
+          details: `Fila: Item "${finalNumber}" concluído e auditado via Gemini 2.5 Flash com ${attachedDocs.length} DDC(s) anexados.`
         }
       ]
     };

@@ -56,8 +56,14 @@ import {
   Eraser,
   FilePlus,
   CheckCircle2,
-  PowerOff
+  PowerOff,
+  FileCheck2,
+  Copy,
+  BookOpen,
+  ExternalLink,
+  FolderArchive
 } from "lucide-react";
+import { saveDocumentFile } from "./utils/documentStorage";
 import { motion, AnimatePresence, useDragControls } from "motion/react";
 import {
   BarChart,
@@ -83,6 +89,7 @@ import {
   ParcelaScheduling,
   ModalidadeContrato,
   Laudo,
+  DivergenciaItem,
   AssociatedDocument,
   ContractHistoryEntry,
   AuditLogEntry
@@ -100,12 +107,18 @@ import { SimuladorNegociacaoModal } from "./components/SimuladorNegociacaoModal"
 import { AuthModal } from "./components/AuthModal";
 import { TaxasManualModal } from "./components/TaxasManualModal";
 import { DocumentViewerModal } from "./components/DocumentViewerModal";
+import { ErrorBoundary } from "./components/ErrorBoundary";
 import { ResumoConsolidadoModal } from "./components/ResumoConsolidadoModal";
+import { GerarDossieModal } from "./components/GerarDossieModal";
 import { LocalBatchModal } from "./components/LocalBatchModal";
+import { McrExplanationModal } from "./components/McrExplanationModal";
+import { LegalSourcesModal } from "./components/LegalSourcesModal";
 import { QueueStatusModal } from "./components/QueueStatusModal";
 import { VirtualizedContractsList } from "./components/VirtualizedContractsList";
+import { KPIHeaderDashboard } from "./components/KPIHeaderDashboard";
+import { CenariosComparativoModal } from "./components/CenariosComparativoModal";
 import { useQueueWorker } from "./hooks/useQueueWorker";
-import { enqueueDocAnalysisTask } from "./lib/queueService";
+import { enqueueDocAnalysisTask, mergeExtractedContractData } from "./lib/queueService";
 import { auth, loginWithGoogle, loginAnonymously, loginAnonymouslyWithName, checkRedirectLoginResult, logout, db, handleFirestoreError, OperationType, getAccessToken, sanitizeFirestoreData } from "./firebase";
 import { onAuthStateChanged, User } from "firebase/auth";
 import { collection, doc, setDoc, getDocs, deleteDoc, query, where, updateDoc, onSnapshot } from "firebase/firestore";
@@ -265,6 +278,8 @@ export default function App() {
   const [historicalIndexadores, setHistoricalIndexadores] = useState<any[]>([]);
   const [loadingHistorical, setLoadingHistorical] = useState(false);
   const [taxasModalOpen, setTaxasModalOpen] = useState(false);
+  const [isComparativoModalOpen, setIsComparativoModalOpen] = useState(false);
+  const [comparativoSim, setComparativoSim] = useState<any>(null);
 
   // AI Extraction State
   const [analyzing, setAnalyzing] = useState(false);
@@ -395,6 +410,16 @@ export default function App() {
   const [user, setUser] = useState<User | null>(null);
   const [saving, setSaving] = useState(false);
   const [isAuthModalOpen, setIsAuthModalOpen] = useState(false);
+  const [isUserMenuOpen, setIsUserMenuOpen] = useState(false);
+  const [isExportMenuOpen, setIsExportMenuOpen] = useState(false);
+
+  useEffect(() => {
+    checkRedirectLoginResult().catch(err => console.warn("Erro no checkRedirectLoginResult:", err));
+    const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
+      setUser(currentUser);
+    });
+    return () => unsubscribe();
+  }, []);
 
   const openAuthModal = () => {
     setIsAuthModalOpen(true);
@@ -420,6 +445,7 @@ export default function App() {
   const handleGoogleLogout = async () => {
     try {
       await logout();
+      setUser(null);
       showToast("Sessão encerrada com sucesso.", "info");
     } catch (err: any) {
       showToast("Erro ao encerrar sessão: " + err.message, "error");
@@ -594,13 +620,44 @@ export default function App() {
   // States for Resumo Consolidado por Cliente Modal
   const [isResumoConsolidadoOpen, setIsResumoConsolidadoOpen] = useState<boolean>(false);
   const [resumoConsolidadoEmitente, setResumoConsolidadoEmitente] = useState<string>("");
+  const [isGerarDossieOpen, setIsGerarDossieOpen] = useState<boolean>(false);
 
   // State for Local Computer Batch Import Modal
   const [isLocalBatchModalOpen, setIsLocalBatchModalOpen] = useState<boolean>(false);
+  const [isMcrModalOpen, setIsMcrModalOpen] = useState<boolean>(false);
+  const [isLegalSourcesOpen, setIsLegalSourcesOpen] = useState<boolean>(false);
+  const [selectedLegalSourceId, setSelectedLegalSourceId] = useState<string | undefined>(undefined);
   const [isQueueModalOpen, setIsQueueModalOpen] = useState<boolean>(false);
 
-  // Background Queue Worker for Gemini Flash 3.6 processing
+  // Background Queue Worker for Gemini 2.5 Flash processing
   const queueWorker = useQueueWorker(true);
+
+  // Handler to update pipeline status (em_trabalho, entregue, etc)
+  const handleUpdateContractStatus = async (simId: string, statusPipeline: 'em_trabalho' | 'em_renegociacao' | 'entregue' | 'arquivado') => {
+    try {
+      const dataEntrega = statusPipeline === 'entregue' ? new Date().toISOString() : undefined;
+      
+      setSavedSimulations(prev =>
+        prev.map(s => (s.id === simId ? { ...s, statusPipeline, dataEntrega } : s))
+      );
+
+      if (simId === "current_contract_active") {
+        setContrato(prev => ({ ...prev, statusPipeline, dataEntrega }));
+      }
+
+      if (db && simId && simId !== "current_contract_active") {
+        await updateDoc(doc(db, "simulations", simId), {
+          statusPipeline,
+          dataEntrega: dataEntrega || null,
+          updatedAt: new Date().toISOString()
+        });
+      }
+      showToast(`Status do contrato atualizado para "${statusPipeline === 'entregue' ? 'Entregue' : statusPipeline === 'em_renegociacao' ? 'Em Renegociação' : 'Em Trabalho'}"!`, "success");
+    } catch (err: any) {
+      console.error(err);
+      showToast("Erro ao atualizar status do pipeline", "error");
+    }
+  };
 
   // Handler to toggle contract active/inactive status in Firestore
   const handleToggleContractStatus = async (simId: string, currentStatus: boolean) => {
@@ -742,6 +799,62 @@ export default function App() {
     mimeType?: string;
   } | null>(null);
 
+  const deduplicateSimulationsList = (rawSims: any[]): any[] => {
+    const map = new Map<string, any>();
+    const withoutNum: any[] = [];
+
+    for (const sim of rawSims) {
+      const cData = sim.contractData || sim.contrato;
+      const rawNum = (cData?.numero || sim.name || "").toString();
+      const cleanNum = rawNum.replace(/[^A-Z0-9]/g, "").toUpperCase();
+
+      if (!cleanNum || cleanNum.length < 3) {
+        withoutNum.push(sim);
+        continue;
+      }
+
+      if (!map.has(cleanNum)) {
+        map.set(cleanNum, sim);
+      } else {
+        const existing = map.get(cleanNum)!;
+        const existingTime = new Date(existing.updatedAt || existing.createdAt || 0).getTime();
+        const currTime = new Date(sim.updatedAt || sim.createdAt || 0).getTime();
+        const existingVersion = existing.version || 1;
+        const currVersion = sim.version || 1;
+
+        // Combine associated documents from both so no attachments are lost
+        const combinedDocsMap = new Map();
+        (existing.associatedDocuments || []).forEach((d: any) => combinedDocsMap.set(d.id || d.name, d));
+        (sim.associatedDocuments || []).forEach((d: any) => combinedDocsMap.set(d.id || d.name, d));
+        const mergedDocs = Array.from(combinedDocsMap.values());
+
+        // Combine audit logs from both
+        const combinedLogsMap = new Map();
+        (existing.auditLogs || []).forEach((l: any) => combinedLogsMap.set(l.id || l.timestamp, l));
+        (sim.auditLogs || []).forEach((l: any) => combinedLogsMap.set(l.id || l.timestamp, l));
+        const mergedLogs = Array.from(combinedLogsMap.values());
+
+        if (currVersion > existingVersion || (currVersion === existingVersion && currTime >= existingTime)) {
+          map.set(cleanNum, {
+            ...sim,
+            version: Math.max(currVersion, existingVersion),
+            associatedDocuments: mergedDocs,
+            auditLogs: mergedLogs
+          });
+        } else {
+          map.set(cleanNum, {
+            ...existing,
+            version: Math.max(currVersion, existingVersion),
+            associatedDocuments: mergedDocs,
+            auditLogs: mergedLogs
+          });
+        }
+      }
+    }
+
+    return [...Array.from(map.values()), ...withoutNum];
+  };
+
   const fetchSavedSimulations = async () => {
     let currentUser = user || auth.currentUser;
     if (!currentUser) {
@@ -764,7 +877,7 @@ export default function App() {
       
       let sims = snapshot.docs.map(docItem => {
         const data = docItem.data();
-        const cData = data.contractData || data.contrato || DEFAULT_CONTRATO;
+        const cData = data.contractData || data.contrato || EMPTY_CONTRATO;
         const sData = data.scenariosData || data.cenarios || DEFAULT_CENARIOS;
         return {
           id: docItem.id,
@@ -776,38 +889,6 @@ export default function App() {
         };
       });
 
-      if (sims.length === 0 && currentUser) {
-        const defaultSimData = {
-          userId: currentUser.uid,
-          createdById: currentUser.uid,
-          createdByName: currentUser.displayName || currentUser.email || "Analista Financeiro",
-          name: "Contrato CPR - Julinere Goulart Bentos",
-          version: 1,
-          createdAt: new Date().toISOString(),
-          updatedAt: new Date().toISOString(),
-          contractData: DEFAULT_CONTRATO,
-          contrato: DEFAULT_CONTRATO,
-          scenariosData: DEFAULT_CENARIOS,
-          cenarios: DEFAULT_CENARIOS,
-          history: [],
-          associatedDocuments: [],
-          auditLogs: [{
-            id: `audit-${Date.now()}`,
-            timestamp: new Date().toISOString(),
-            userName: currentUser.displayName || currentUser.email || "Analista Financeiro",
-            action: "Criado automaticamente (Base Inicial)"
-          }]
-        };
-
-        try {
-          const defaultDocRef = doc(db, "simulations", "cpr-julinere-default");
-          await setDoc(defaultDocRef, sanitizeFirestoreData(defaultSimData));
-          sims = [{ id: "cpr-julinere-default", ...defaultSimData }];
-        } catch (seedErr) {
-          console.warn("Erro ao semear contrato inicial:", seedErr);
-        }
-      }
-
       const getTime = (val: any) => {
         if (!val) return 0;
         if (typeof val === 'string' || typeof val === 'number') return new Date(val).getTime();
@@ -817,9 +898,10 @@ export default function App() {
       };
 
       sims.sort((a: any, b: any) => getTime(b.createdAt) - getTime(a.createdAt));
-      setSavedSimulations(sims);
+      const deduplicatedSims = deduplicateSimulationsList(sims);
+      setSavedSimulations(deduplicatedSims);
       try {
-        localStorage.setItem("cached_simulations_v1", JSON.stringify(sims));
+        localStorage.setItem("cached_simulations_v1", JSON.stringify(deduplicatedSims));
       } catch (e) {}
     } catch (err) {
       console.error("Erro ao buscar simulações do Firestore:", err);
@@ -845,7 +927,7 @@ export default function App() {
     const unsubscribe = onSnapshot(q, (snapshot) => {
       let sims = snapshot.docs.map(docItem => {
         const data = docItem.data();
-        const cData = data.contractData || data.contrato || DEFAULT_CONTRATO;
+        const cData = data.contractData || data.contrato || EMPTY_CONTRATO;
         const sData = data.scenariosData || data.cenarios || DEFAULT_CENARIOS;
         return {
           id: docItem.id,
@@ -866,17 +948,31 @@ export default function App() {
       };
 
       sims.sort((a: any, b: any) => getTime(b.createdAt) - getTime(a.createdAt));
+      const deduplicatedSims = deduplicateSimulationsList(sims);
 
-      if (sims.length > 0) {
-        setSavedSimulations(sims);
-        try {
-          localStorage.setItem("cached_simulations_v1", JSON.stringify(sims));
-        } catch (e) {}
-      }
+      setSavedSimulations(deduplicatedSims);
+      try {
+        localStorage.setItem("cached_simulations_v1", JSON.stringify(deduplicatedSims));
+      } catch (e) {}
       setLoadingSimulations(false);
-    }, (err) => {
+    }, (err: any) => {
       console.error("Erro no listener Firestore onSnapshot:", err);
       setLoadingSimulations(false);
+
+      if (err?.message?.includes("Quota exceeded") || err?.code === "resource-exhausted") {
+        showToast("Limite de cota diária de leitura do Firestore atingido. Usando dados salvos localmente.", "info");
+      }
+
+      // Load cached local simulations as fallback
+      try {
+        const cached = localStorage.getItem("cached_simulations_v1");
+        if (cached) {
+          const parsed = JSON.parse(cached);
+          if (Array.isArray(parsed) && parsed.length > 0) {
+            setSavedSimulations(parsed);
+          }
+        }
+      } catch (e) {}
     });
 
     return () => unsubscribe();
@@ -945,6 +1041,77 @@ export default function App() {
     return { name: "Prazos & Carência", color: "bg-emerald-50 text-emerald-700 border-emerald-250" };
   };
 
+  const getLegalBasisForDivergencia = (item: DivergenciaItem) => {
+    if (item.fundamentacaoLegal) {
+      let sourceId = "mcr-portal-oficial";
+      let officialUrl = "https://manuais.bcb.gov.br/app/manual/mcr/publico";
+      const lower = item.fundamentacaoLegal.toLowerCase();
+      if (lower.includes("176")) {
+        sourceId = "sumula-176-stj";
+        officialUrl = "https://www.stj.jus.br/docs_internet/revista/REJTJ/S%C3%BAmula%20176.pdf";
+      } else if (lower.includes("288")) {
+        sourceId = "sumula-288-stj";
+        officialUrl = "https://www.stj.jus.br/docs_internet/revista/REJTJ/S%C3%BAmula%20288.pdf";
+      } else if (lower.includes("298")) {
+        sourceId = "sumula-298-stj";
+        officialUrl = "https://www.stj.jus.br/docs_internet/revista/REJTJ/S%C3%BAmula%20298.pdf";
+      } else if (lower.includes("93") || lower.includes("mora") || lower.includes("167")) {
+        sourceId = "sumula-93-stj";
+        officialUrl = "https://www.stj.jus.br/docs_internet/revista/REJTJ/S%C3%BAmula%2093.pdf";
+      } else if (lower.includes("8.078") || lower.includes("cdc") || lower.includes("casada")) {
+        sourceId = "cdc-venda-casada";
+        officialUrl = "https://www.planalto.gov.br/ccivil_03/leis/l8078compilado.htm";
+      } else if (lower.includes("4.829") || lower.includes("lei")) {
+        sourceId = "lei-4829-1965";
+        officialUrl = "https://www.planalto.gov.br/ccivil_03/leis/l4829.htm";
+      }
+      return { citation: item.fundamentacaoLegal, sourceId, officialUrl };
+    }
+
+    const text = (item.campo + " " + item.detalhe).toLowerCase();
+    if (text.includes("cdi") || text.includes("flutuante") || text.includes("indexador")) {
+      return {
+        citation: "Súmula 176 do STJ, Lei nº 4.829/1965 Art. 14 e Decreto-Lei nº 167/1967",
+        sourceId: "sumula-176-stj",
+        officialUrl: "https://www.stj.jus.br/docs_internet/revista/REJTJ/S%C3%BAmula%20176.pdf"
+      };
+    }
+    if (text.includes("juros") || text.includes("12%") || text.includes("remuneratório") || text.includes("taxa")) {
+      return {
+        citation: "Súmula 288 do STJ, Decreto Federal 22.626/1933 (Lei de Usura) e MCR (BACEN)",
+        sourceId: "sumula-288-stj",
+        officialUrl: "https://www.stj.jus.br/docs_internet/revista/REJTJ/S%C3%BAmula%20288.pdf"
+      };
+    }
+    if (text.includes("mora") || text.includes("atraso") || text.includes("multa") || text.includes("encargo")) {
+      return {
+        citation: "Súmula 93 do STJ, Decreto-Lei nº 167/1967 Art. 5º Parágrafo Único e Súmula 379 do STJ",
+        sourceId: "sumula-93-stj",
+        officialUrl: "https://www.stj.jus.br/docs_internet/revista/REJTJ/S%C3%BAmula%2093.pdf"
+      };
+    }
+    if (text.includes("prorroga") || text.includes("alongamento") || text.includes("mcr 2-6-4") || text.includes("safra") || text.includes("principal")) {
+      return {
+        citation: "Manual de Crédito Rural (MCR 2-6-4), Súmula 298 do STJ e Lei nº 4.829/1965",
+        sourceId: "mcr-2-6-4",
+        officialUrl: "https://manuais.bcb.gov.br/app/manual/mcr/publico"
+      };
+    }
+    if (text.includes("seguro") || text.includes("tarifa") || text.includes("outros") || text.includes("venda casada") || text.includes("tac")) {
+      return {
+        citation: "Lei nº 8.078/1990 (Código de Defesa do Consumidor - Art. 39, I) e Súmula 297 do STJ",
+        sourceId: "cdc-venda-casada",
+        officialUrl: "https://www.planalto.gov.br/ccivil_03/leis/l8078compilado.htm"
+      };
+    }
+
+    return {
+      citation: "Manual de Crédito Rural (BACEN / CMN) e Legislação Agrícola Federal",
+      sourceId: "mcr-portal-oficial",
+      officialUrl: "https://manuais.bcb.gov.br/app/manual/mcr/publico"
+    };
+  };
+
   const filteredDivergencias = (laudo?.divergencias || []).filter((item) => {
     if (selectedFocusFilter === "all") return true;
     const campoLower = item.campo.toLowerCase();
@@ -974,7 +1141,7 @@ export default function App() {
         setUser(currentUser);
       } else {
         try {
-          const cred = await loginAnonymouslyWithName("Analista Financeiro");
+          const cred = await loginAnonymouslyWithName("Fernando Gomes Santos");
           setUser(cred.user);
         } catch (e) {
           console.warn("Erro ao realizar login anônimo automático:", e);
@@ -1084,8 +1251,8 @@ export default function App() {
       const simulationId = loadedSimulationId || `${user.uid}_${Date.now()}`;
       const existingSim = isEditing ? savedSimulations.find(s => s.id === loadedSimulationId) : null;
       
-      const userEmail = user.email || "analista@agro.com";
-      const userName = user.displayName || userEmail.split("@")[0];
+      const userEmail = user.email || "fernandobask@gmail.com";
+      const userName = user.displayName || (user.email ? user.email.split("@")[0] : "Fernando Gomes Santos");
 
       const auditEntry: AuditLogEntry = {
         id: `log_${Date.now()}`,
@@ -1147,8 +1314,8 @@ export default function App() {
       const simulationId = loadedSimulationId || `${user.uid}_${Date.now()}`;
       const existingSim = loadedSimulationId ? savedSimulations.find(s => s.id === loadedSimulationId) : null;
 
-      const userEmail = user.email || "analista@agro.com";
-      const userName = user.displayName || userEmail.split("@")[0];
+      const userEmail = user.email || "fernandobask@gmail.com";
+      const userName = user.displayName || (user.email ? user.email.split("@")[0] : "Fernando Gomes Santos");
 
       const auditEntry: AuditLogEntry = {
         id: `log_${Date.now()}`,
@@ -1246,7 +1413,14 @@ export default function App() {
             throw new Error(data.error || "Ocorreu um erro desconhecido durante a análise do PDF.");
           }
 
-          if (data && data.numero) {
+          if (data) {
+            // Guarantee a valid, unique contract number if missing or generic
+            let contractNum = (data.numero || "").toString().trim();
+            if (!contractNum || contractNum.toUpperCase() === "S/N" || contractNum.toUpperCase() === "SEM NUMERO" || contractNum === "0000") {
+              const cleanFileName = file.name.replace(/\.[^/.]+$/, "").replace(/[^a-zA-Z0-9-]/g, "").substring(0, 12).toUpperCase();
+              contractNum = `CPR-${cleanFileName || "DOC"}-${Math.floor(1000 + Math.random() * 9000)}`;
+            }
+
             const cronograma = data.cronogramaParcelas && data.cronogramaParcelas.length > 0
               ? data.cronogramaParcelas.map((p: any) => {
                   const pYear = p.data ? new Date(p.data).getFullYear() : 9999;
@@ -1259,24 +1433,40 @@ export default function App() {
                     valorOutrosManual: undefined
                   };
                 })
-              : DEFAULT_CONTRATO.cronogramaParcelas;
+              : [];
+
+            const extractedPrincipal = Number(data.valorPrincipal) || Number(data.valorEmissao) || 0;
+            let finalValorPrincipal = extractedPrincipal;
+
+            if (finalValorPrincipal <= 0 && cronograma && cronograma.length > 0) {
+              const sumParcelas = cronograma.reduce((sum: number, p: any) => {
+                return sum + (Number(p.valorPrincipalManual) || Number(p.valorAmortizadoPago) || 0);
+              }, 0);
+              if (sumParcelas > 0) {
+                finalValorPrincipal = sumParcelas;
+              }
+            }
+
+            if (finalValorPrincipal <= 0) {
+              finalValorPrincipal = 0;
+            }
 
             const novoContrato = {
-              numero: data.numero,
+              numero: contractNum,
               modalidade: data.modalidade || "",
-              emitente: data.emitente,
-              credor: data.credor,
-              dataEmissao: data.dataEmissao,
-              dataVencimento: data.dataVencimento,
-              valorPrincipal: Number(data.valorPrincipal) || 100000.0,
-              taxaJurosAnual: Number(data.taxaJurosAnual) || 3.5,
+              emitente: data.emitente || "Emitente Não Informado",
+              credor: data.credor || "Credor Não Informado",
+              dataEmissao: data.dataEmissao || new Date().toISOString().split("T")[0],
+              dataVencimento: data.dataVencimento || new Date().toISOString().split("T")[0],
+              valorPrincipal: finalValorPrincipal,
+              taxaJurosAnual: Number(data.taxaJurosAnual) || 0,
               indexadorOriginal: Object.values(Indexador).includes(data.indexador as Indexador)
                 ? (data.indexador as Indexador)
-                : Indexador.INPC,
+                : Indexador.CDI,
               cronogramaParcelas: cronograma,
               produto: data.produto || "",
               quantidade: data.quantidade || "",
-              valorEmissao: Number(data.valorEmissao) || Number(data.valorPrincipal)
+              valorEmissao: Number(data.valorEmissao) || finalValorPrincipal
             };
 
             const getContractDifferences = (c1: Contrato, c2: Contrato): string[] => {
@@ -1308,44 +1498,7 @@ export default function App() {
               return cNum !== "" && cNum === nNum;
             });
 
-            const nameLower = (file.name || "").toLowerCase();
-            const extractedTipo = (data.tipoDocumento || "").toString().toUpperCase();
-            const isDdc = extractedTipo === "DDC" || nameLower.includes("ddc") || nameLower.includes("demonstrativo");
-            const isPlano = extractedTipo === "PLANO" || nameLower.includes("plano") || nameLower.includes("recupe") || nameLower.includes("evolu");
-
-            if (user && duplicate && (isDdc || isPlano)) {
-              // Automatically associate as auxiliary document instead of causing a conflict block
-              const newDoc: AssociatedDocument = {
-                id: `doc_${Date.now()}`,
-                name: file.name.replace(/\.[^/.]+$/, ""),
-                type: isDdc ? "Demonstrativo de Saldo Devedor" : "Planilha de Evolução / Cálculo",
-                fileName: file.name,
-                fileData: base64Data,
-                mimeType: file.type || "application/pdf",
-                notes: `Associado e integrado de forma dinâmica via Inteligência Artificial.`,
-                uploadDate: new Date().toISOString()
-              };
-
-              const existingDocs = duplicate.associatedDocuments || [];
-              const updatedSim = {
-                ...duplicate,
-                associatedDocuments: [...existingDocs, newDoc],
-                updatedAt: new Date().toISOString()
-              };
-
-              setDoc(doc(db, "simulations", duplicate.id), sanitizeFirestoreData(updatedSim))
-                .then(async () => {
-                  await fetchSavedSimulations();
-                  // Automatically trigger the analysis and merge
-                  await handleAnalyzeAndFill(duplicate.id, newDoc);
-                  setAnalyzing(false);
-                  setActiveNav("dashboard");
-                })
-                .catch((err) => {
-                  handleFirestoreError(err, OperationType.UPDATE, `simulations/${duplicate.id}`);
-                  setAnalyzing(false);
-                });
-            } else if (user && duplicate) {
+            if (user && duplicate) {
               const diffs = getContractDifferences(duplicate.contractData || duplicate.contrato, novoContrato);
               setDuplicateConflict({
                 existingSim: duplicate,
@@ -1353,17 +1506,17 @@ export default function App() {
                 differences: diffs
               });
               setAnalyzing(false);
-              setActiveNav("contratos");
             } else {
+              const simulationId = `${user?.uid || "user"}_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
               setContrato(novoContrato);
               setSelectedFluxoCenario("original");
+              setLoadedSimulationId(simulationId);
               setAnalyzing(false);
               setActiveNav("dashboard"); // Return to simulation dashboard on success
 
               if (user) {
-                const simulationId = `${user.uid}_${Date.now()}`;
-                const userEmail = user.email || "analista@agro.com";
-                const userName = user.displayName || userEmail.split("@")[0];
+                const userEmail = user.email || "fernandobask@gmail.com";
+                const userName = user.displayName || (user.email ? user.email.split("@")[0] : "Fernando Gomes Santos");
 
                 const auditEntry: AuditLogEntry = {
                   id: `log_${Date.now()}`,
@@ -1372,7 +1525,7 @@ export default function App() {
                   userName: userName,
                   userEmail: userEmail,
                   action: "Upload de Contrato (PDF/OCR)",
-                  details: `Contrato Nº ${novoContrato.numero || "S/N"} subido e processado via OCR/IA por ${userName}`
+                  details: `Contrato Nº ${novoContrato.numero} subido e processado via OCR/IA por ${userName}`
                 };
 
                 const simData = {
@@ -1387,7 +1540,7 @@ export default function App() {
                   updatedByEmail: userEmail,
                   updatedAt: new Date().toISOString(),
 
-                  name: `Upload Auto - ${novoContrato.numero || "Sem Nome"}`,
+                  name: `Contrato ${novoContrato.numero} - ${novoContrato.emitente || "Sem Nome"}`,
                   contractData: novoContrato,
                   scenariosData: cenarios,
                   version: 1,
@@ -1603,6 +1756,70 @@ export default function App() {
     }
   };
 
+  const handleResolveAddNewContract = async () => {
+    if (!duplicateConflict || !user) return;
+    const { novoContrato } = duplicateConflict;
+    setSaving(true);
+    try {
+      const userEmail = user.email || "analista@agro.com";
+      const userName = user.displayName || userEmail.split("@")[0];
+
+      let finalNumber = novoContrato.numero || `CPR-${Date.now().toString().slice(-4)}`;
+      const isAlreadyUsed = savedSimulations.some(s => normalizeContractNumber(s.contractData?.numero || s.contrato?.numero || "") === normalizeContractNumber(finalNumber));
+      if (isAlreadyUsed) {
+        finalNumber = `${finalNumber}-N2`;
+      }
+
+      const newContractData = {
+        ...novoContrato,
+        numero: finalNumber
+      };
+
+      const simulationId = `${user.uid}_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
+
+      const auditEntry: AuditLogEntry = {
+        id: `log_${Date.now()}`,
+        timestamp: new Date().toISOString(),
+        userId: user.uid,
+        userName: userName,
+        userEmail: userEmail,
+        action: "Cadastro de Novo Contrato Independente",
+        details: `Novo contrato Nº ${finalNumber} adicionado ao grid de forma independente por ${userName}`
+      };
+
+      const simData = {
+        userId: user.uid,
+        createdById: user.uid,
+        createdByName: userName,
+        createdByEmail: userEmail,
+        createdAt: new Date().toISOString(),
+        updatedById: user.uid,
+        updatedByName: userName,
+        updatedByEmail: userEmail,
+        updatedAt: new Date().toISOString(),
+        name: `Contrato ${finalNumber} - ${newContractData.emitente || "Novo"}`,
+        contractData: newContractData,
+        scenariosData: cenarios,
+        version: 1,
+        history: [],
+        associatedDocuments: [],
+        auditLogs: [auditEntry]
+      };
+
+      await setDoc(doc(db, "simulations", simulationId), sanitizeFirestoreData(simData));
+      setLoadedSimulationId(simulationId);
+      setContrato(newContractData);
+      await fetchSavedSimulations();
+      setDuplicateConflict(null);
+      setActiveNav("dashboard");
+      showToast(`Novo contrato Nº ${finalNumber} adicionado ao grid com sucesso!`, "success");
+    } catch (err) {
+      handleFirestoreError(err, OperationType.CREATE, "simulations");
+    } finally {
+      setSaving(false);
+    }
+  };
+
   const handleAddAssociatedDocument = async (simId: string, docData: { name: string; type: string; notes: string; fileName: string; fileData?: string; mimeType?: string }) => {
     const sim = savedSimulations.find(s => s.id === simId);
     if (!sim || !user) return;
@@ -1610,15 +1827,21 @@ export default function App() {
     const userEmail = user.email || "analista@agro.com";
     const userName = user.displayName || userEmail.split("@")[0];
 
+    // Save binary data to IndexedDB to bypass Firestore 1MB limit while preserving viewing
+    const newDocId = `doc_${Date.now()}`;
+    if (docData.fileData) {
+      saveDocumentFile(newDocId, docData.fileData);
+    }
+
     const newDoc: AssociatedDocument = {
-      id: `doc_${Date.now()}`,
+      id: newDocId,
       uploadDate: new Date().toISOString(),
       name: docData.name || "Documento Sem Nome",
       type: docData.type || "Outro",
       fileName: docData.fileName || "arquivo.pdf",
       notes: docData.notes,
-      fileData: docData.fileData,
-      mimeType: docData.mimeType
+      mimeType: docData.mimeType,
+      fileData: docData.fileData
     };
     
     const auditEntry: AuditLogEntry = {
@@ -1648,9 +1871,9 @@ export default function App() {
       setNewDocForm(null);
       showToast("Documento associado com sucesso!", "success");
       
-      // Automatically analyze document with Gemini and auto-fill contract data
-      if (newDoc.fileData) {
-        await handleAnalyzeAndFill(simId, newDoc);
+      // Execute analysis immediately if fileData exists in memory
+      if (docData.fileData) {
+        await handleAnalyzeAndFill(simId, { ...newDoc, fileData: docData.fileData });
       }
     } catch (err) {
       handleFirestoreError(err, OperationType.UPDATE, `simulations/${simId}`);
@@ -1844,31 +2067,68 @@ export default function App() {
     }
 
     const sim = savedSimulations.find(s => s.id === simId);
-    const contractNum = sim?.contractData?.numero || sim?.contrato?.numero || "C00000000-0";
+    if (!sim) return;
 
     setAnalyzingDocId(docItem.id);
-    showToast("Análise agendada na fila de segundo plano do Firestore. Gemini Flash 3.6 atualizará em breve...", "info");
+    showToast("Extraindo dados e analisando documento com IA Gemini...", "info");
 
     try {
-      await enqueueDocAnalysisTask({
-        simulationId: simId,
-        contractNumber: contractNum,
-        docItem: {
-          id: docItem.id,
-          fileName: docItem.fileName || docItem.name || "Documento Auxiliar",
+      // 1. Enviar para a IA extrair dados
+      const response = await fetch("/api/analyze-contract", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
           fileData: docItem.fileData,
           mimeType: docItem.mimeType || "application/pdf",
-          type: docItem.type
-        },
-        userId: user?.uid,
-        userName: user?.displayName || "Analista",
-        userEmail: user?.email || undefined
+          fileName: docItem.fileName
+        })
       });
 
+      if (!response.ok) {
+        throw new Error("Erro na resposta do servidor.");
+      }
+
+      const extractedData = await response.json();
+
+      // 2. Mesclar com o contrato atual
+      const currentContractData = sim.contractData || sim.contrato;
+      const mergedContract = mergeExtractedContractData(currentContractData, extractedData);
+
+      // 3. Registrar log e salvar
+      const userEmail = user?.email || "analista@agro.com";
+      const userName = user?.displayName || userEmail.split("@")[0];
+
+      const auditEntry: AuditLogEntry = {
+        id: `log_${Date.now()}`,
+        timestamp: new Date().toISOString(),
+        userId: user?.uid || "anonymous",
+        userName: userName,
+        userEmail: userEmail,
+        action: "doc_analisado_direto",
+        details: `Documento auxiliar "${docItem.fileName}" analisado e mesclado via IA.`
+      };
+
+      const updatedSim = {
+        ...sim,
+        contractData: mergedContract,
+        contrato: mergedContract,
+        updatedAt: new Date().toISOString(),
+        auditLogs: [...(sim.auditLogs || []), auditEntry]
+      };
+
+      await setDoc(doc(db, "simulations", simId), sanitizeFirestoreData(updatedSim), { merge: true });
       await fetchSavedSimulations();
+      
+      // Update UI if this is the currently loaded simulation
+      if (loadedSimulationId === simId) {
+        setContrato(mergedContract);
+      }
+      
+      showToast("Documento analisado e dados integrados ao contrato com sucesso!", "success");
+
     } catch (err: any) {
-      console.error("Erro ao agendar análise do documento na fila:", err);
-      showToast("Erro ao agendar análise do documento: " + err.message, "error");
+      console.error("Erro ao analisar documento:", err);
+      showToast("Erro ao processar o documento: " + err.message, "error");
     } finally {
       setTimeout(() => setAnalyzingDocId(null), 800);
     }
@@ -2232,26 +2492,61 @@ export default function App() {
           ${laudo ? `
             <div class="section-title">3. Parecer Técnico & Laudo de Irregularidades Detectadas</div>
             <div class="summary-box">
-              <div style="font-weight: 700; font-size: 12px; margin-bottom: 4px;">Parecer da Auditoria:</div>
-              <div>${laudo.resumo || "Sem irregularidades impeditivas identificadas."}</div>
+              <div style="font-weight: 700; font-size: 12px; margin-bottom: 4px;">Parecer Fundamentado da Auditoria:</div>
+              <div style="margin-bottom: 12px; line-height: 1.5;">${laudo.resumo || "Sem irregularidades impeditivas identificadas."}</div>
+              
               ${laudo.pontosDeAtencao && laudo.pontosDeAtencao.length > 0 ? `
-                <div style="margin-top: 8px; font-weight: 700;">Pontos de Atenção:</div>
-                <ul style="margin-top: 4px; padding-left: 16px;">
-                  ${laudo.pontosDeAtencao.map((ponto: string) => `<li>${ponto}</li>`).join("")}
+                <div style="margin-top: 10px; font-weight: 700; color: #92400e; font-size: 11px;">PONTOS CRÍTICOS DE ATENÇÃO:</div>
+                <ul style="margin-top: 4px; padding-left: 18px; margin-bottom: 12px;">
+                  ${laudo.pontosDeAtencao.map((ponto: string) => `<li style="margin-bottom: 3px;">${ponto}</li>`).join("")}
                 </ul>
               ` : ""}
+
               ${laudo.divergencias && laudo.divergencias.length > 0 ? `
-                <div style="margin-top: 8px; font-weight: 700;">Divergências Identificadas nos Documentos do Banco:</div>
-                <ul style="margin-top: 4px; padding-left: 16px;">
-                  ${laudo.divergencias.map((d: any) => `<li><strong>${d.campo || "Divergência"}:</strong> ${d.detalhe || d.valorDocumento}</li>`).join("")}
-                </ul>
+                <div style="margin-top: 12px; font-weight: 700; color: #1e3a8a; font-size: 11px; margin-bottom: 6px;">
+                  MATRIZ DE DIVERGÊNCIAS E INCONFORMIDADES LEGAIS IDENTIFICADAS:
+                </div>
+                <table style="width: 100%; border-collapse: collapse; font-size: 10px; margin-top: 4px;">
+                  <thead>
+                    <tr style="background-color: #f1f5f9; text-align: left; font-weight: 700; color: #334155;">
+                      <th style="padding: 6px; border: 1px solid #cbd5e1; width: 18%;">Item Auditado</th>
+                      <th style="padding: 6px; border: 1px solid #cbd5e1; width: 22%;">Valor Contrato vs. Documento</th>
+                      <th style="padding: 6px; border: 1px solid #cbd5e1; width: 30%;">Fundamentação Legal & Súmula STJ</th>
+                      <th style="padding: 6px; border: 1px solid #cbd5e1; width: 30%;">Impacto Técnico / Detalhamento</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    ${laudo.divergencias.map((d: any) => {
+                      const basis = getLegalBasisForDivergencia(d);
+                      return `
+                        <tr>
+                          <td style="padding: 6px; border: 1px solid #e2e8f0; font-weight: 700; color: #0f172a;">${d.campo || "Divergência"}</td>
+                          <td style="padding: 6px; border: 1px solid #e2e8f0;">
+                            Original: <strong>${d.valorContrato}</strong><br/>
+                            Cobrado: <span style="color: #b91c1c; font-weight: 700;">${d.valorDocumento}</span>
+                          </td>
+                          <td style="padding: 6px; border: 1px solid #e2e8f0; font-weight: 700; color: #1e3a8a; background-color: #fefce8;">
+                            ⚖️ ${d.fundamentacaoLegal || basis.citation}
+                          </td>
+                          <td style="padding: 6px; border: 1px solid #e2e8f0; color: #334155;">${d.detalhe}</td>
+                        </tr>
+                      `;
+                    }).join("")}
+                  </tbody>
+                </table>
+              ` : ""}
+
+              ${laudo.recomendacao ? `
+                <div style="margin-top: 12px; padding: 8px; background-color: #f0fdf4; border: 1px solid #bbf7d0; border-radius: 6px; font-size: 10px; color: #14532d;">
+                  <strong>Recomendação da Perícia:</strong> ${laudo.recomendacao}
+                </div>
               ` : ""}
             </div>
           ` : ""}
 
           <div class="signatures">
             <div class="sig-line">
-              <strong>${user?.displayName || "Analista / Perito Responsável"}</strong><br/>
+              <strong>${user?.displayName || (user?.email ? user.email.split('@')[0] : "Fernando Gomes Santos")}</strong><br/>
               Perícia de Crédito Rural
             </div>
             <div class="sig-line">
@@ -2492,6 +2787,15 @@ export default function App() {
             </button>
 
             <button
+              onClick={() => { console.log("Clicou Gerar Dossie"); setIsGerarDossieOpen(true); }}
+              title={!isSidebarOpen ? "Gerar Dossiê Geral" : undefined}
+              className={`w-full p-2.5 rounded-lg flex items-center ${isSidebarOpen ? "gap-2.5" : "justify-center"} transition font-medium text-xs text-left cursor-pointer text-slate-400 hover:bg-slate-800/60 hover:text-white`}
+            >
+              <FolderArchive className="w-4 h-4 text-blue-400 shrink-0" />
+              {isSidebarOpen && <span className="whitespace-nowrap overflow-hidden">Gerar Dossiê Geral</span>}
+            </button>
+
+            <button
               onClick={() => setActiveNav("indexadores")}
               title={!isSidebarOpen ? "Configurar Taxas" : undefined}
               className={`w-full p-2.5 rounded-lg flex items-center ${isSidebarOpen ? "gap-2.5" : "justify-center"} transition font-medium text-xs text-left cursor-pointer ${
@@ -2553,56 +2857,58 @@ export default function App() {
 
         {/* GOOGLE ACCOUNT PROFILE IN SIDEBAR */}
         <div className={`mt-auto border-t border-slate-800 pt-4 px-1 ${!isSidebarOpen && 'hidden'}`}>
-          {user ? (
-            <div className="flex items-center gap-2.5 p-2.5 bg-slate-900 rounded-xl border border-slate-800 shadow-sm">
-              {user.photoURL ? (
-                <img src={user.photoURL} alt={user.displayName || "Usuário"} className="w-8 h-8 rounded-full border border-emerald-500/30 object-cover shrink-0" />
-              ) : (
-                <div className="w-8 h-8 rounded-full bg-emerald-600 text-white font-bold text-xs flex items-center justify-center shrink-0">
-                  {(user.displayName || user.email || (user.isAnonymous ? "A" : "G")).charAt(0).toUpperCase()}
+          {user && !user.isAnonymous ? (
+            <div className="p-3.5 bg-slate-950/80 rounded-2xl border border-slate-800 shadow-sm space-y-3">
+              <div className="flex items-center gap-3">
+                {user.photoURL ? (
+                  <img src={user.photoURL} alt={user.displayName || "Usuário Google"} className="w-9 h-9 rounded-full border-2 border-emerald-500/50 object-cover shrink-0 shadow-2xs" />
+                ) : (
+                  <div className="w-9 h-9 rounded-full bg-emerald-700 text-white font-bold text-sm flex items-center justify-center shrink-0 border-2 border-emerald-500/50 shadow-2xs">
+                    {(user.displayName || user.email || "G").charAt(0).toUpperCase()}
+                  </div>
+                )}
+                <div className="flex-1 min-w-0">
+                  <p className="text-sm font-bold text-slate-100 truncate">
+                    {user.displayName || (user.email ? user.email.split('@')[0] : "Usuário Google")}
+                  </p>
+                  <p className="text-xs text-slate-400 truncate">{user.email}</p>
                 </div>
-              )}
-              <div className="flex-1 min-w-0">
-                <div className="flex items-center gap-1">
-                  <p className="text-xs font-bold text-slate-200 truncate">{user.displayName || (user.isAnonymous ? "Analista (Modo Rápido)" : "Usuário Google")}</p>
-                </div>
-                <p className="text-[10px] text-slate-400 truncate">{user.email || "Sessão Firebase Ativa"}</p>
+                <button
+                  onClick={handleGoogleLogout}
+                  title="Sair da Conta Google (Logoff)"
+                  className="text-slate-400 hover:text-rose-400 p-2 transition rounded-xl hover:bg-slate-800 cursor-pointer shrink-0"
+                >
+                  <LogOut className="w-4.5 h-4.5" />
+                </button>
               </div>
-              <button
-                onClick={handleGoogleLogout}
-                title="Sair da sessão Firebase"
-                className="text-slate-400 hover:text-red-400 p-1.5 transition rounded-lg hover:bg-slate-800 cursor-pointer shrink-0"
-              >
-                <LogOut className="w-4 h-4" />
-              </button>
+
+              {/* Provider Badge */}
+              <div className="flex items-center justify-between text-xs pt-2 border-t border-slate-800/80">
+                <span className="text-slate-400 font-medium">Sessão Ativa:</span>
+                <span className="inline-flex items-center gap-1.5 font-bold text-blue-300 bg-blue-500/20 px-2.5 py-0.5 rounded-md border border-blue-400/30">
+                  <GoogleIcon className="w-3.5 h-3.5" />
+                  Conta Google
+                </span>
+              </div>
             </div>
           ) : (
-            <div className="p-3 bg-slate-900/90 rounded-xl border border-slate-800 space-y-2">
-              <div className="flex items-center justify-between text-xs font-bold text-slate-200">
+            <div className="p-3.5 bg-slate-950/80 rounded-2xl border border-slate-800 shadow-sm space-y-3">
+              <div className="flex items-center justify-between text-xs sm:text-sm font-bold text-slate-100">
                 <div className="flex items-center gap-2">
                   <GoogleIcon className="w-4 h-4" />
                   <span>Autenticação Google</span>
                 </div>
               </div>
-              <p className="text-[10px] text-slate-400 leading-tight">
-                Conecte-se para salvar simulações no banco de dados e exportar laudos.
+              <p className="text-xs text-slate-400 leading-relaxed font-normal">
+                Faça login para salvar suas simulações e auditorias com sua conta Google.
               </p>
-              <div className="space-y-1.5 pt-1">
-                <button
-                  onClick={handleGoogleLogin}
-                  className="w-full py-2 bg-white hover:bg-slate-100 text-slate-800 font-bold text-xs rounded-lg transition flex items-center justify-center gap-2 shadow-sm cursor-pointer"
-                >
-                  <GoogleIcon className="w-3.5 h-3.5" />
-                  <span>Entrar com Google</span>
-                </button>
-                <button
-                  onClick={openAuthModal}
-                  className="w-full py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold text-[11px] rounded-lg transition flex items-center justify-center gap-1.5 cursor-pointer"
-                >
-                  <ShieldCheck className="w-3.5 h-3.5 text-emerald-400" />
-                  <span>Outras Opções</span>
-                </button>
-              </div>
+              <button
+                onClick={handleGoogleLogin}
+                className="w-full py-2.5 bg-white hover:bg-slate-100 text-slate-900 font-bold text-xs sm:text-sm rounded-xl transition flex items-center justify-center gap-2 shadow-2xs cursor-pointer"
+              >
+                <GoogleIcon className="w-4 h-4" />
+                <span>Entrar com Google</span>
+              </button>
             </div>
           )}
         </div>
@@ -2611,112 +2917,164 @@ export default function App() {
       {/* WORKSPACE AREA */}
       <div className="flex-1 flex flex-col overflow-y-auto h-screen print:h-auto print:overflow-visible bg-slate-50/50">
         
-        {/* TOP STATUS BAR ON DESKTOP */}
-        <header className="bg-white border-b border-slate-200 py-4 px-8 flex justify-between items-center shrink-0 print:hidden">
-          <div className="space-y-1">
-            <h2 className="text-xl font-bold text-slate-800">Análise de Renegociação</h2>
-            <p className="text-xs text-slate-500">Comparativo estratégico de fluxos, taxas e indexadores rurais</p>
-          </div>
-          
+        {/* REFORMULATED REFINED TOP COMMAND HEADER */}
+        <header className="bg-white border-b border-slate-200 py-3 px-6 flex items-center justify-between shrink-0 print:hidden shadow-2xs gap-4 flex-wrap lg:flex-nowrap">
+          {/* ZONE 1: BRANDING & ACTIVE CONTEXT */}
           <div className="flex items-center gap-3">
-            {!user ? (
-              <div className="flex items-center gap-2">
-                <button
-                  onClick={handleGoogleLogin}
-                  className="px-4 py-2 bg-white border border-slate-300 hover:bg-slate-50 text-slate-800 rounded-xl text-xs font-bold shadow-xs transition flex items-center gap-2 cursor-pointer"
-                >
-                  <GoogleIcon className="w-4 h-4" />
-                  <span>Entrar com Google</span>
-                </button>
-                <button
-                  onClick={openAuthModal}
-                  className="px-3 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-bold transition flex items-center gap-1.5 cursor-pointer"
-                  title="Mais opções de login"
-                >
-                  <ShieldCheck className="w-4 h-4 text-emerald-600" />
-                  <span>Opções</span>
-                </button>
-              </div>
-            ) : (
-              <>
-                <div className="flex items-center gap-2.5 bg-slate-50 px-3 py-1.5 rounded-xl border border-slate-200">
-                  {user.photoURL ? (
-                    <img src={user.photoURL} alt={user.displayName || "Usuário"} className="w-7 h-7 rounded-full border border-emerald-500/30 object-cover" />
-                  ) : (
-                    <div className="w-7 h-7 rounded-full bg-emerald-600 text-white font-bold text-xs flex items-center justify-center">
-                      {(user.displayName || user.email || (user.isAnonymous ? "A" : "G")).charAt(0).toUpperCase()}
-                    </div>
-                  )}
-                  <div className="text-left hidden sm:block">
-                    <div className="flex items-center gap-1.5">
-                      <p className="text-xs font-bold text-slate-800 leading-none">{user.displayName || (user.isAnonymous ? "Analista (Modo Rápido)" : "Usuário")}</p>
-                      <span className="inline-flex items-center gap-0.5 text-[9px] bg-emerald-50 text-emerald-700 font-bold px-1.5 py-0.2 rounded border border-emerald-200">
-                        Firebase
-                      </span>
-                    </div>
-                    <p className="text-[10px] text-slate-500 leading-tight truncate max-w-[150px]">{user.email || "Sessão Firebase Ativa"}</p>
-                  </div>
-                </div>
+            <div className="w-9 h-9 rounded-xl bg-slate-900 text-emerald-400 font-bold flex items-center justify-center border border-slate-800 shadow-xs shrink-0">
+              <Scale className="w-5 h-5 text-emerald-400" />
+            </div>
+            <div>
+              <h2 className="text-base font-bold text-slate-900 leading-tight">Análise de Renegociação</h2>
+              <p className="text-[11px] text-slate-500 leading-tight">
+                Comparativo de fluxos, taxas e indexadores rurais
+              </p>
+            </div>
+          </div>
 
-                <button
-                  onClick={handleSaveSimulation}
-                  disabled={saving}
-                  className="px-4 py-2 bg-emerald-50 text-emerald-700 border border-emerald-200 rounded-xl text-xs font-bold hover:bg-emerald-100 shadow-xs transition flex items-center gap-2 cursor-pointer"
-                >
-                  <Save className={`w-4 h-4 ${saving ? "animate-spin" : "text-emerald-600"}`} />
-                  {saving ? "Salvando..." : "Salvar Simulação"}
-                </button>
-                <button
-                  onClick={handleGoogleLogout}
-                  title="Sair da conta"
-                  className="px-3 py-2 bg-white border border-slate-200 rounded-xl text-xs font-bold text-slate-600 hover:bg-red-50 hover:text-red-600 hover:border-red-200 shadow-xs transition flex items-center gap-1.5 cursor-pointer"
-                >
-                  <LogOut className="w-3.5 h-3.5" />
-                  <span className="hidden md:inline">Sair</span>
-                </button>
-              </>
-            )}
-            
-            <button
-              onClick={() => setTaxasModalOpen(true)}
-              className="px-3.5 py-2 bg-slate-100 hover:bg-slate-200 text-slate-800 border border-slate-300 rounded-xl text-xs font-bold transition flex items-center gap-1.5 cursor-pointer shadow-xs"
-              title="Abrir painel de atualização manual de taxas e indexadores"
-            >
-              <RefreshCw className="w-4 h-4 text-emerald-600" />
-              <span>Atualizar Taxas (Manual)</span>
-            </button>
+          {/* ZONE 2: TOOL SHORTCUTS (CENTERED PILL GROUP) */}
+          <div className="hidden md:flex items-center bg-slate-100 p-1 rounded-2xl border border-slate-200/80 shadow-2xs gap-1">
             <button
               onClick={() => setSimuladorModalOpen(true)}
-              className="px-3.5 py-2 bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-700 hover:to-teal-700 text-white rounded-xl text-xs font-bold shadow-xs transition flex items-center gap-1.5 cursor-pointer"
-              title="Abrir Simulador de Negociação e Repactuação"
+              className="px-3 py-1.5 bg-white hover:bg-emerald-50 text-emerald-900 font-bold text-xs rounded-xl shadow-2xs transition flex items-center gap-1.5 border border-slate-200/60 cursor-pointer"
+              title="Abrir Simulador de Repactuação e Cenários"
             >
-              <Sparkles className="w-4 h-4 text-amber-300 animate-pulse" />
+              <Sparkles className="w-3.5 h-3.5 text-amber-500 animate-pulse" />
               <span>Simulador</span>
             </button>
             <button
               onClick={() => openMemoriaCalculo()}
-              className="px-3.5 py-2 bg-emerald-700 text-white rounded-xl text-xs font-bold hover:bg-emerald-800 shadow-xs transition flex items-center gap-1.5 cursor-pointer"
+              className="px-3 py-1.5 text-slate-700 hover:text-slate-900 font-bold text-xs rounded-xl transition flex items-center gap-1.5 cursor-pointer hover:bg-slate-200/60"
               title="Abrir Memória de Cálculo Auditável"
             >
-              <Calculator className="w-4 h-4 text-emerald-300" />
+              <Calculator className="w-3.5 h-3.5 text-emerald-600" />
               <span>Memória de Cálculo</span>
             </button>
             <button
-              onClick={triggerCSVExport}
-              className="px-3.5 py-2 bg-white border border-slate-200 rounded-xl text-xs font-bold text-slate-700 hover:bg-slate-50 shadow-xs transition flex items-center gap-1.5 cursor-pointer"
-              title="Exportar dados para planilha Excel (.csv)"
+              onClick={() => setTaxasModalOpen(true)}
+              className="px-3 py-1.5 text-slate-700 hover:text-slate-900 font-bold text-xs rounded-xl transition flex items-center gap-1.5 cursor-pointer hover:bg-slate-200/60"
+              title="Ajustar Taxas e Indexadores do Banco Central"
             >
-              <FileSpreadsheet className="w-4 h-4 text-emerald-600" />
-              <span>Exportar XLS</span>
+              <RefreshCw className="w-3.5 h-3.5 text-blue-600" />
+              <span>Atualizar Taxas</span>
             </button>
             <button
-              onClick={triggerPDFExport}
-              className="px-3.5 py-2 bg-slate-900 text-white rounded-xl text-xs font-bold hover:bg-slate-800 shadow-md transition flex items-center gap-1.5 cursor-pointer"
-              title="Gerar Relatório Técnico Completo em PDF"
+              onClick={() => setIsMcrModalOpen(true)}
+              className="px-3 py-1.5 text-slate-700 hover:text-slate-900 font-bold text-xs rounded-xl transition flex items-center gap-1.5 cursor-pointer hover:bg-amber-50 text-amber-900"
+              title="Entenda o MCR (Manual de Crédito Rural) e como funciona a auditoria de juros e o lote"
             >
-              <Download className="w-4 h-4 text-emerald-400" />
-              <span>Gerar Relatório (PDF)</span>
+              <Info className="w-3.5 h-3.5 text-amber-600" />
+              <span>Guia MCR</span>
             </button>
+            <button
+              onClick={() => {
+                setSelectedLegalSourceId(undefined);
+                setIsLegalSourcesOpen(true);
+              }}
+              className="px-3 py-1.5 text-slate-700 hover:text-slate-900 font-bold text-xs rounded-xl transition flex items-center gap-1.5 cursor-pointer hover:bg-emerald-50 text-emerald-900"
+              title="Consulte todas as Leis, Decretos, MCR e Súmulas do STJ com links oficiais no Planalto e BACEN"
+            >
+              <Scale className="w-3.5 h-3.5 text-emerald-600" />
+              <span>Fontes & Leis</span>
+            </button>
+          </div>
+
+          {/* ZONE 3: ACTIONS & USER IDENTITY DROPDOWN */}
+          <div className="flex items-center gap-2.5 ml-auto">
+            {/* VIEW CONTRACT BUTTON */}
+            <button
+              onClick={() => {
+                setViewingDocument({
+                  id: loadedSimulationId ? `doc_contract_${loadedSimulationId}` : `doc_contract_current`,
+                  name: `Cédula de Crédito / Contrato Original - Nº ${contrato?.numero || "S/N"}`,
+                  type: contrato?.modalidade || "Cédula de Crédito Rural (Contrato Principal)",
+                  uploadDate: new Date().toISOString(),
+                  fileName: `Contrato_${contrato?.numero || "Original"}.pdf`,
+                  notes: `Cédula Mestre do contrato de crédito rural emitido para ${contrato?.emitente || "Produtor Rural"}.`,
+                  contratoData: contrato
+                });
+              }}
+              className="px-3.5 py-2 bg-slate-900 hover:bg-slate-800 text-white border border-slate-700/80 rounded-xl text-xs font-bold shadow-xs transition flex items-center gap-2 cursor-pointer"
+              title="Visualizar Cédula de Crédito / Contrato Ativo"
+            >
+              <FileCheck2 className="w-4 h-4 text-emerald-400" />
+              <span className="hidden sm:inline">Ver Cédula / Contrato</span>
+            </button>
+
+            {/* SAVE BUTTON */}
+            <button
+              onClick={handleSaveSimulation}
+              disabled={saving}
+              className="px-4 py-2 bg-emerald-700 hover:bg-emerald-800 text-white rounded-xl text-xs font-bold shadow-xs transition flex items-center gap-2 cursor-pointer disabled:opacity-60"
+            >
+              <Save className={`w-4 h-4 ${saving ? "animate-spin text-amber-300" : "text-emerald-200"}`} />
+              <span>{saving ? "Salvando..." : "Salvar Simulação"}</span>
+            </button>
+
+            {/* EXPORT DROPDOWN MENU */}
+            <div className="relative">
+              <button
+                onClick={() => setIsExportMenuOpen(!isExportMenuOpen)}
+                className="px-3.5 py-2 bg-white border border-slate-200 hover:bg-slate-50 text-slate-800 rounded-xl text-xs font-bold shadow-2xs transition flex items-center gap-1.5 cursor-pointer"
+              >
+                <Download className="w-4 h-4 text-emerald-600" />
+                <span className="hidden sm:inline">Exportar</span>
+                <ChevronDown className={`w-3.5 h-3.5 text-slate-400 transition-transform ${isExportMenuOpen ? "rotate-180" : ""}`} />
+              </button>
+
+              {isExportMenuOpen && (
+                <div className="absolute right-0 mt-2 w-56 bg-white border border-slate-200 rounded-2xl shadow-xl z-50 p-1.5 space-y-1">
+                  <button
+                    onClick={() => {
+                      setIsExportMenuOpen(false);
+                      triggerPDFExport();
+                    }}
+                    className="w-full text-left px-3 py-2 hover:bg-slate-50 rounded-xl text-xs font-bold text-slate-800 flex items-center gap-2.5 transition cursor-pointer"
+                  >
+                    <div className="w-7 h-7 rounded-lg bg-red-50 text-red-600 flex items-center justify-center font-bold">
+                      <Download className="w-4 h-4" />
+                    </div>
+                    <div>
+                      <div>Gerar Relatório (PDF)</div>
+                      <div className="text-[10px] text-slate-400 font-normal">Laudo técnico formatado com parecer</div>
+                    </div>
+                  </button>
+                  <button
+                    onClick={() => {
+                      setIsExportMenuOpen(false);
+                      triggerCSVExport();
+                    }}
+                    className="w-full text-left px-3 py-2 hover:bg-slate-50 rounded-xl text-xs font-bold text-slate-800 flex items-center gap-2.5 transition cursor-pointer"
+                  >
+                    <div className="w-7 h-7 rounded-lg bg-emerald-50 text-emerald-600 flex items-center justify-center font-bold">
+                      <FileSpreadsheet className="w-4 h-4" />
+                    </div>
+                    <div>
+                      <div>Exportar Planilha (XLS)</div>
+                      <div className="text-[10px] text-slate-400 font-normal">Tabela de projeção detalhada em CSV</div>
+                    </div>
+                  </button>
+
+                  <button
+                    onClick={() => {
+                      setIsExportMenuOpen(false);
+                      setIsGerarDossieOpen(true);
+                    }}
+                    className="w-full text-left px-3 py-2 hover:bg-blue-50/70 rounded-xl text-xs font-bold text-slate-800 flex items-center gap-2.5 transition cursor-pointer border-t border-slate-100 mt-1 pt-2"
+                  >
+                    <div className="w-7 h-7 rounded-lg bg-blue-100 text-blue-700 flex items-center justify-center font-bold">
+                      <FolderArchive className="w-4 h-4" />
+                    </div>
+                    <div>
+                      <div className="text-blue-900 font-black">Gerar Dossiê Geral (ZIP)</div>
+                      <div className="text-[10px] text-blue-700 font-normal">Pacote consolidado pericial do cliente</div>
+                    </div>
+                  </button>
+                </div>
+              )}
+            </div>
+
+
           </div>
         </header>
 
@@ -2728,7 +3086,7 @@ export default function App() {
         </div>
 
         {/* MAIN BODY CONTENTS */}
-        <div className="p-8 space-y-6 max-w-7xl w-full mx-auto flex-1">
+        <div className="px-4 sm:px-6 md:px-8 py-6 space-y-6 w-full max-w-none flex-1">
           
           {/* RENDER DYNAMIC NAVIGATION TABS INSTEAD OF SCROLLING */}
           {activeNav === "contratos" && (
@@ -2789,6 +3147,12 @@ export default function App() {
                         </div>
                         <div className="flex flex-wrap items-center gap-2">
                           <button
+                            onClick={handleResolveAddNewContract}
+                            className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white font-bold rounded-lg text-xs transition cursor-pointer flex items-center gap-1.5 shadow-sm"
+                          >
+                            <FilePlus className="w-3.5 h-3.5" /> Cadastrar como Novo Contrato Independente
+                          </button>
+                          <button
                             onClick={() => {
                               const input = document.getElementById("changeSummaryInput") as HTMLInputElement;
                               handleResolveNewVersion(input?.value || "Nova versão carregada manualmente");
@@ -2807,6 +3171,12 @@ export default function App() {
                       </>
                     ) : (
                       <div className="flex flex-wrap items-center gap-2">
+                        <button
+                          onClick={handleResolveAddNewContract}
+                          className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white font-bold rounded-lg text-xs transition cursor-pointer flex items-center gap-1.5 shadow-sm"
+                        >
+                          <FilePlus className="w-3.5 h-3.5" /> Cadastrar como Novo Contrato Independente
+                        </button>
                         <button
                           onClick={handleResolveKeepExisting}
                           className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded-lg text-xs transition cursor-pointer flex items-center gap-1.5"
@@ -2843,7 +3213,7 @@ export default function App() {
                     <div>
                       <div className="flex items-center gap-2">
                         <h3 className="font-bold text-slate-800 text-base">Extração e Análise Contratual com IA</h3>
-                        <span className="px-2 py-0.5 bg-emerald-50 text-emerald-700 text-[10px] font-bold rounded-full border border-emerald-200">Gemini 3.6 Flash AI</span>
+                        <span className="px-2 py-0.5 bg-emerald-50 text-emerald-700 text-[10px] font-bold rounded-full border border-emerald-200">Gemini 2.5 Flash AI</span>
                       </div>
                       <p className="text-xs text-slate-500">Mapeie dados de Cédulas Rurais (CPR), DDCs e Planos de Renegociação em segundos.</p>
                     </div>
@@ -2868,6 +3238,14 @@ export default function App() {
                     >
                       <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-300" />
                       <span>Resumo Consolidado Único</span>
+                    </button>
+                    <button
+                      onClick={() => { console.log("Clicou Gerar Dossie"); setIsGerarDossieOpen(true); }}
+                      className="px-3.5 py-2 bg-blue-900 hover:bg-blue-800 text-white rounded-xl font-bold text-xs transition-all flex items-center gap-2 shadow-xs cursor-pointer shrink-0 border border-blue-800"
+                      title="Gerar Dossiê Geral Consolidado (.ZIP / PDF) do Cliente"
+                    >
+                      <FolderArchive className="w-3.5 h-3.5 text-blue-300" />
+                      <span>Gerar Dossiê Geral</span>
                     </button>
                   </div>
                 </div>
@@ -3059,6 +3437,13 @@ export default function App() {
 
                       return (
                         <>
+                          {/* KPI HEADER DASHBOARD */}
+                          <KPIHeaderDashboard 
+                            simulations={savedSimulations}
+                            formatCurrency={formatCurrency}
+                            onOpenSimulador={() => setActiveNav("dashboard")}
+                          />
+
                           {/* TEAM UNIFIED DATABASE INFO BANNER */}
                           <div className="bg-emerald-50/80 border border-emerald-200/90 rounded-xl p-3 flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 text-xs">
                             <div className="flex items-center gap-2">
@@ -3221,13 +3606,30 @@ export default function App() {
                                   setActiveNav("dashboard");
                                   showToast(`Contrato Nº ${cData?.numero || "S/N"} carregado!`, "success");
                                 }}
+                                onOpenComparativo={(sim) => {
+                                  setComparativoSim(sim);
+                                  setIsComparativoModalOpen(true);
+                                }}
                                 onToggleStatus={(simId, currentStatus) => handleToggleContractStatus(simId, currentStatus)}
-                                onRemoveSimulation={(simId) => {
-                                  showConfirm("Deseja realmente remover esta simulação e todos os seus históricos?", async () => {
+                                onRemoveSimulation={async (simId) => {
+                                  const simToDelete = savedSimulations.find(s => s.id === simId);
+                                  showConfirm("Deseja realmente remover este contrato e todas as propostas?", async () => {
                                     try {
                                       await deleteDoc(doc(db, "simulations", simId));
-                                      fetchSavedSimulations();
-                                      showToast("Simulação removida com sucesso!", "success");
+                                      
+                                      // Excluir propostas de negociação vinculadas a este contrato
+                                      if (simToDelete?.contractData?.numero) {
+                                        const q = query(collection(db, "propostas_negociacao"), where("contratoNumero", "==", simToDelete.contractData.numero));
+                                        const querySnapshot = await getDocs(q);
+                                        const deletePromises = querySnapshot.docs.map(d => deleteDoc(d.ref));
+                                        await Promise.all(deletePromises);
+                                      }
+
+                                      if (loadedSimulationId === simId) {
+                                        setLoadedSimulationId(null);
+                                      }
+                                      await fetchSavedSimulations();
+                                      showToast("Contrato e propostas removidos com sucesso!", "success");
                                     } catch (err) {
                                       handleFirestoreError(err, OperationType.DELETE, `simulations/${simId}`);
                                     }
@@ -4004,7 +4406,16 @@ export default function App() {
                           <th className="p-3 text-center whitespace-nowrap">Situação²</th>
                           <th className="p-3 text-right whitespace-nowrap">Principal¹ (Amort.)</th>
                           <th className="p-3 text-right whitespace-nowrap">Juros¹ (Remun.)</th>
-                          <th className="p-3 text-right whitespace-nowrap">Correção¹ (CDI)</th>
+                          <th className="p-3 text-center whitespace-nowrap">Taxa Indexador MCR</th>
+                          <th className="p-3 text-right whitespace-nowrap">
+                            <span>Correção¹</span>
+                            <span 
+                              className="ml-1.5 inline-flex items-center px-1.5 py-0.5 rounded text-xs font-mono font-bold bg-slate-200/90 text-slate-800 border border-slate-300 shadow-2xs"
+                              title={`Indexador Aplicado no Cálculo da Correção Monetária: ${contrato.indexadorOriginal || 'INPC'}`}
+                            >
+                              {contrato.indexadorOriginal === Indexador.PRE ? "PRÉ" : (contrato.indexadorOriginal || "INPC")}
+                            </span>
+                          </th>
                           <th className="p-3 text-right whitespace-nowrap">Encargos Mora</th>
                           <th className="p-3 text-right whitespace-nowrap">Outros³ (Multa)</th>
                           <th className="p-3 text-right whitespace-nowrap">Amortizado¹ (Pago)</th>
@@ -4018,6 +4429,32 @@ export default function App() {
                           const valorCalculado = p.valorCalculado;
                           const daysOverdue = p.daysOverdue;
                           const isExpanded = expandedIndex === idx;
+
+                          // Rotina de checagem e validação entre Taxa Contratada e Taxa MCR (Teto 12% a.a.)
+                          const taxaContratada = contrato.taxaJurosAnual || 0;
+                          const indexadorOrigStr = (contrato.indexadorOriginal || "").toString().toUpperCase();
+                          const isCdiOrFlutuante = indexadorOrigStr.includes("CDI") || indexadorOrigStr.includes("SELIC") || indexadorOrigStr.includes("FLUTUANTE") || indexadorOrigStr.includes("VARIAVEL");
+                          
+                          const tetoLegalMCR = 12.0;
+                          const taxaMCREsperada = taxaContratada > tetoLegalMCR ? tetoLegalMCR : taxaContratada;
+                          const indexadorMCR = isCdiOrFlutuante ? "INPC" : (contrato.indexadorOriginal || "INPC");
+                          
+                          // Discrepância negativa = (Taxa MCR - Taxa Contrato Real) < 0
+                          const diffTaxaMcrContrato = taxaMCREsperada - taxaContratada;
+                          const temDiscrepanciaNegativa = diffTaxaMcrContrato < 0;
+                          const temDesvio = temDiscrepanciaNegativa || isCdiOrFlutuante;
+
+                          // Descrição detalhada do cálculo MCR para a tooltip
+                          const detailedMcrTooltip = [
+                            `=== CÁLCULO NORMATIVO MCR ===`,
+                            `• Teto Legal MCR: ${tetoLegalMCR.toFixed(2)}% a.a. (Decreto 22.626/33 - Lei de Usura / Súmula 288 STJ)`,
+                            `• Taxa Pactuada no Contrato: ${taxaContratada.toFixed(2)}% a.a.`,
+                            `• Taxa MCR Recalculada: ${taxaMCREsperada.toFixed(2)}% a.a. ${taxaContratada > tetoLegalMCR ? `(Redução de -${(taxaContratada - tetoLegalMCR).toFixed(2)}% a.a. aplicada pelo teto de 12%)` : '(Mantida taxa contratada de acordo com o teto de 12,00% a.a.)'}`,
+                            `• Indexador do Contrato: ${contrato.indexadorOriginal || 'INPC'}`,
+                            `• Indexador MCR Aplicado: ${indexadorMCR} ${isCdiOrFlutuante ? '(VEDADO: Indexador flutuante substituído por INPC - Súmula 176 STJ)' : '(Indexador conforme)'}`,
+                            `• Resultado Final MCR: ${taxaMCREsperada.toFixed(2)}% a.a. + ${indexadorMCR}`,
+                            `• Status de Auditoria: ${temDesvio ? '⚠️ DESVIO IDENTIFICADO (Requer adequação contratual)' : '✅ CONFORME REGRAMENTO MCR'}`
+                          ].join('\n');
 
                           return (
                             <React.Fragment key={idx}>
@@ -4093,6 +4530,33 @@ export default function App() {
                                   {formatCurrency(p.jurosRemuneratorios)}
                                 </td>
 
+                                {/* Taxa Indexador MCR */}
+                                <td className="p-3 text-center whitespace-nowrap font-medium text-xs">
+                                  <div 
+                                    className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md font-mono text-xs font-semibold border transition cursor-help ${
+                                      temDesvio 
+                                        ? "bg-amber-50 text-amber-950 border-amber-300 hover:bg-amber-100 hover:border-amber-400 shadow-2xs" 
+                                        : "bg-emerald-50 text-emerald-900 border-emerald-200 hover:bg-emerald-100"
+                                    }`}
+                                    title={detailedMcrTooltip}
+                                  >
+                                    <span className={temDesvio ? "font-bold text-amber-950" : "font-bold text-emerald-800"}>
+                                      {taxaMCREsperada.toFixed(2)}% ({indexadorMCR})
+                                    </span>
+                                    {temDesvio ? (
+                                      <span className="inline-flex items-center text-amber-700 bg-amber-200/70 px-1.5 py-0.5 rounded text-[10px] font-extrabold uppercase tracking-wider">
+                                        <AlertCircle className="w-3.5 h-3.5 text-amber-600 mr-0.5 shrink-0" />
+                                        Desvio MCR
+                                      </span>
+                                    ) : (
+                                      <span className="inline-flex items-center text-emerald-700 bg-emerald-100 px-1.5 py-0.5 rounded text-[10px] font-extrabold uppercase tracking-wider">
+                                        <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600 mr-0.5 shrink-0" />
+                                        MCR OK
+                                      </span>
+                                    )}
+                                  </div>
+                                </td>
+
                                 {/* Correção¹ (CDI) */}
                                 <td className="p-3 text-right whitespace-nowrap font-semibold text-slate-700 text-sm">
                                   {formatCurrency(p.correcaoMonetaria)}
@@ -4142,7 +4606,7 @@ export default function App() {
                               {/* COLLAPSIBLE DETAILED BREAKDOWN ROW */}
                               {isExpanded && (
                                 <tr>
-                                  <td colSpan={11} className="p-3 bg-slate-50/50">
+                                  <td colSpan={12} className="p-3 bg-slate-50/50">
                                     <div className="bg-slate-100 border border-slate-200 rounded-xl p-4 space-y-4 shadow-inner">
                                       <div className="flex justify-between items-center pb-2 border-b border-slate-200">
                                         <div className="flex flex-col">
@@ -4591,9 +5055,15 @@ export default function App() {
                                   setExpandedDivergencias({});
                                 }
                               }}
-                              className="text-xs text-emerald-600 hover:text-emerald-700 font-bold flex items-center gap-1 cursor-pointer hover:underline transition animate-fade-in"
+                              title="Expandir ou recolher os detalhes, teses jurídicas e desvios de todos os itens de auditoria"
+                              className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-emerald-50 hover:bg-emerald-100 active:bg-emerald-200 text-emerald-800 border border-emerald-200/90 rounded-lg text-xs font-bold transition shadow-2xs cursor-pointer select-none"
                             >
-                              {filteredDivergencias.map((_, i) => i).some(i => !expandedDivergencias[i]) ? "📂 Expandir Todos" : "📁 Recolher Todos"}
+                              <FolderOpen className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+                              <span>
+                                {filteredDivergencias.map((_, i) => i).some(i => !expandedDivergencias[i])
+                                  ? `Expandir Todos (${filteredDivergencias.length})`
+                                  : "Recolher Todos"}
+                              </span>
                             </button>
                           )}
                         </div>
@@ -4695,10 +5165,66 @@ export default function App() {
                                             </div>
                                           </div>
                                           
-                                          <div className="flex items-center justify-between text-xs text-slate-400 font-bold uppercase tracking-wider">
-                                            <span>Documento Base: {item.documentoAuxiliar}</span>
-                                            <span className="text-emerald-600">Verificação IA Concluída</span>
-                                          </div>
+                                          {/* Fundamentação Legal & Súmulas do STJ / BACEN */}
+                                          {(() => {
+                                            const legalInfo = getLegalBasisForDivergencia(item);
+                                            return (
+                                              <div className="bg-amber-50/70 border border-amber-200/80 rounded-xl p-3.5 space-y-2">
+                                                <div className="flex items-center justify-between gap-2">
+                                                  <div className="flex items-center gap-1.5 text-amber-900 font-extrabold text-xs">
+                                                    <Scale className="w-4 h-4 text-amber-600 shrink-0" />
+                                                    <span>Fundamentação Legal & Jurisprudência do STJ / BACEN:</span>
+                                                  </div>
+                                                  <div className="flex items-center gap-1.5 shrink-0">
+                                                    <button
+                                                      type="button"
+                                                      onClick={() => {
+                                                        const citationText = `[FUNDAMENTAÇÃO JURÍDICA PERICIAL]\nParâmetro Auditado: ${item.campo}\nFundamentação Legal / Súmula: ${legalInfo.citation}\nDetalhamento Técnico: ${item.detalhe}`;
+                                                        navigator.clipboard.writeText(citationText);
+                                                        showToast("Citação jurídica copiada para a área de transferência!", "success");
+                                                      }}
+                                                      className="text-[11px] font-bold text-amber-800 hover:text-amber-950 bg-white hover:bg-amber-100 px-2 py-1 rounded-lg border border-amber-300 transition flex items-center gap-1 cursor-pointer shadow-2xs"
+                                                      title="Copiar citação formatada para petição judicial ou parecer"
+                                                    >
+                                                      <Copy className="w-3 h-3 text-amber-600" />
+                                                      <span>Copiar p/ Petição</span>
+                                                    </button>
+
+                                                    <button
+                                                      type="button"
+                                                      onClick={() => {
+                                                        setSelectedLegalSourceId(legalInfo.sourceId);
+                                                        setIsLegalSourcesOpen(true);
+                                                      }}
+                                                      className="text-[11px] font-bold text-emerald-700 hover:text-emerald-900 bg-white hover:bg-emerald-50 px-2.5 py-1 rounded-lg border border-emerald-300 transition flex items-center gap-1 cursor-pointer shadow-2xs"
+                                                    >
+                                                      <BookOpen className="w-3 h-3 text-emerald-600" />
+                                                      <span>Consultar Norma</span>
+                                                    </button>
+                                                  </div>
+                                                </div>
+
+                                                <p className="text-xs font-bold text-amber-950 font-mono bg-white/80 p-2 rounded-lg border border-amber-200/60 leading-snug">
+                                                  ⚖️ {legalInfo.citation}
+                                                </p>
+
+                                                <div className="flex flex-wrap items-center justify-between gap-2 pt-1 text-[11px] text-slate-500">
+                                                  <span>Documento de Origem: <strong>{item.documentoAuxiliar}</strong></span>
+                                                  {legalInfo.officialUrl && (
+                                                    <a
+                                                      href={legalInfo.officialUrl}
+                                                      target="_blank"
+                                                      rel="noopener noreferrer"
+                                                      className="inline-flex items-center gap-1 text-blue-700 hover:text-blue-900 font-bold hover:underline"
+                                                    >
+                                                      <span>Conferir no Portal Oficial</span>
+                                                      <ExternalLink className="w-3 h-3" />
+                                                    </a>
+                                                  )}
+                                                </div>
+                                              </div>
+                                            );
+                                          })()}
                                         </div>
                                       </motion.div>
                                     )}
@@ -5471,21 +5997,60 @@ export default function App() {
       />
 
       {/* Modal de Resumo Consolidado Único de Contratos por Cliente / Credor */}
-      <ResumoConsolidadoModal
-        isOpen={isResumoConsolidadoOpen}
-        onClose={() => setIsResumoConsolidadoOpen(false)}
-        simulations={savedSimulations}
-        initialEmitente={resumoConsolidadoEmitente}
-        indexadores={indexadores}
-        onToggleAtivo={handleToggleContractStatus}
-      />
+      <ErrorBoundary name="ResumoConsolidadoModal">
+        <ResumoConsolidadoModal
+          isOpen={isResumoConsolidadoOpen}
+          onClose={() => setIsResumoConsolidadoOpen(false)}
+          simulations={savedSimulations}
+          initialEmitente={resumoConsolidadoEmitente}
+          indexadores={indexadores}
+          onToggleAtivo={handleToggleContractStatus}
+        />
+      </ErrorBoundary>
+
+      {/* Modal de Gerar Dossiê Geral de Perícia Rural (ZIP / PDF) */}
+      <ErrorBoundary name="GerarDossieModal">
+        <GerarDossieModal
+          isOpen={isGerarDossieOpen}
+          onClose={() => setIsGerarDossieOpen(false)}
+          savedSimulations={savedSimulations}
+          currentContract={contrato}
+          currentLaudo={laudo}
+          onUpdateStatus={handleUpdateContractStatus}
+          userEmail={user?.email || undefined}
+          userName={user?.displayName || undefined}
+        />
+      </ErrorBoundary>
 
       {/* Modal de Importação em Lote do Computador Local */}
       <LocalBatchModal
         isOpen={isLocalBatchModalOpen}
         onClose={() => setIsLocalBatchModalOpen(false)}
         user={user}
+        existingSimulations={savedSimulations}
         onComplete={fetchSavedSimulations}
+        showToast={showToast}
+      />
+
+      {/* Modal Guia MCR Auto-Explicativo */}
+      <McrExplanationModal
+        isOpen={isMcrModalOpen}
+        onClose={() => setIsMcrModalOpen(false)}
+        onOpenBatchImport={() => {
+          setIsMcrModalOpen(false);
+          setIsLocalBatchModalOpen(true);
+        }}
+        onOpenLegalSources={() => {
+          setIsMcrModalOpen(false);
+          setIsLegalSourcesOpen(true);
+        }}
+      />
+
+      {/* Modal de Base Legal & Súmulas Oficiais */}
+      <LegalSourcesModal
+        isOpen={isLegalSourcesOpen}
+        onClose={() => setIsLegalSourcesOpen(false)}
+        initialSourceId={selectedLegalSourceId}
         showToast={showToast}
       />
 
@@ -5499,115 +6064,26 @@ export default function App() {
         onRetryTask={queueWorker.retryTask}
       />
 
-      {/* Modal Global de Conflito de Contrato Duplicado */}
-      {duplicateConflict && (
-        <div className="fixed inset-0 bg-slate-900/80 backdrop-blur-sm flex items-center justify-center p-4 z-50 animate-fade-in">
-          <div className="bg-white rounded-2xl shadow-2xl border border-amber-200 max-w-2xl w-full overflow-hidden flex flex-col max-h-[90vh]">
-            <div className="bg-amber-500 text-white p-5 flex items-center justify-between border-b border-amber-600">
-              <div className="flex items-center gap-3">
-                <div className="p-2 bg-amber-600 rounded-xl">
-                  <AlertTriangle className="w-6 h-6 animate-pulse" />
-                </div>
-                <div>
-                  <h3 className="font-bold text-base md:text-lg text-white">⚠️ Cédula de Crédito / Contrato Duplicado Detectado</h3>
-                  <p className="text-xs text-amber-100">Um contrato idêntico ou com mesmo número já existe no banco de dados</p>
-                </div>
-              </div>
-              <button
-                onClick={() => setDuplicateConflict(null)}
-                className="text-amber-100 hover:text-white p-1 rounded-lg hover:bg-amber-600 transition cursor-pointer"
-                title="Descartar / Fechar"
-              >
-                <X className="w-6 h-6" />
-              </button>
-            </div>
-
-            <div className="p-6 overflow-y-auto space-y-4 text-slate-800">
-              <p className="text-sm">
-                O contrato número <strong className="text-amber-800 font-bold">{duplicateConflict.novoContrato.numero}</strong> já está cadastrado no sistema para o emitente <strong className="text-slate-900">{duplicateConflict.existingSim.contractData?.emitente || duplicateConflict.existingSim.contrato?.emitente || "Não informado"}</strong>.
-              </p>
-
-              <div className="bg-amber-50 border border-amber-200 rounded-xl p-4 space-y-2 text-xs">
-                <h4 className="font-bold text-amber-900 text-sm flex items-center gap-1.5">
-                  <Activity className="w-4 h-4 text-amber-600" />
-                  Diferenças identificadas entre os documentos:
-                </h4>
-                {duplicateConflict.differences.length === 0 ? (
-                  <p className="text-slate-600 italic">
-                    Os dados do contrato importado são idênticos aos salvos no banco de dados. Nenhuma divergência financeira ou de prazos foi encontrada.
-                  </p>
-                ) : (
-                  <ul className="list-disc pl-5 space-y-1 font-semibold text-amber-950">
-                    {duplicateConflict.differences.map((diff, i) => (
-                      <li key={i}>{diff}</li>
-                    ))}
-                  </ul>
-                )}
-              </div>
-
-              {duplicateConflict.differences.length > 0 && (
-                <div>
-                  <label className="block text-xs font-bold text-slate-700 mb-1">
-                    Motivo da alteração (resumo histórico):
-                  </label>
-                  <input
-                    type="text"
-                    placeholder="Ex: Nova repactuação de juros ou correção pelo IPCA..."
-                    id="changeSummaryInputModalGlobal"
-                    className="w-full bg-slate-50 border border-slate-300 rounded-xl px-3 py-2 text-xs text-slate-900 focus:bg-white focus:outline-none focus:ring-2 focus:ring-amber-500 font-medium"
-                  />
-                </div>
-              )}
-            </div>
-
-            <div className="bg-slate-100 border-t border-slate-200 p-4 flex flex-wrap items-center justify-end gap-2">
-              <button
-                onClick={() => setDuplicateConflict(null)}
-                className="px-4 py-2.5 bg-slate-200 hover:bg-slate-300 text-slate-700 font-bold rounded-xl text-xs transition cursor-pointer"
-              >
-                Descartar Envio / Cancelar
-              </button>
-
-              {duplicateConflict.differences.length === 0 ? (
-                <>
-                  <button
-                    onClick={handleResolveKeepExisting}
-                    className="px-4 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded-xl text-xs transition cursor-pointer flex items-center gap-1.5 shadow-xs"
-                  >
-                    <FileText className="w-4 h-4" /> Carregar Registro Existente
-                  </button>
-                  <button
-                    onClick={() => {
-                      handleResolveNewVersion("Re-importação manual de documento idêntico");
-                    }}
-                    className="px-4 py-2.5 bg-slate-800 hover:bg-slate-900 text-white font-bold rounded-xl text-xs transition cursor-pointer"
-                  >
-                    Salvar como Nova Versão (v{(duplicateConflict.existingSim.version || 1) + 1})
-                  </button>
-                </>
-              ) : (
-                <>
-                  <button
-                    onClick={handleResolveOverwrite}
-                    className="px-4 py-2.5 bg-amber-600 hover:bg-amber-700 text-white font-bold rounded-xl text-xs transition cursor-pointer"
-                  >
-                    Sobrescrever Versão Atual
-                  </button>
-                  <button
-                    onClick={() => {
-                      const input = document.getElementById("changeSummaryInputModalGlobal") as HTMLInputElement;
-                      handleResolveNewVersion(input?.value || "Nova versão carregada manualmente");
-                    }}
-                    className="px-4 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded-xl text-xs transition cursor-pointer shadow-xs"
-                  >
-                    Salvar como Nova Versão (v{(duplicateConflict.existingSim.version || 1) + 1})
-                  </button>
-                </>
-              )}
-            </div>
-          </div>
-        </div>
-      )}
+      {/* Modal de Comparativo de Cenários MCR vs Banco Lado a Lado */}
+      <CenariosComparativoModal
+        isOpen={isComparativoModalOpen}
+        onClose={() => {
+          setIsComparativoModalOpen(false);
+          setComparativoSim(null);
+        }}
+        contrato={comparativoSim ? (comparativoSim.contractData || comparativoSim.contrato) : null}
+        taxasMap={indexadores}
+        formatCurrency={formatCurrency}
+        formatPercentage={formatPercentage}
+        onTriggerPDFExport={() => {
+          setIsComparativoModalOpen(false);
+          triggerPDFExport();
+        }}
+        onTriggerCSVExport={() => {
+          setIsComparativoModalOpen(false);
+          triggerCSVExport();
+        }}
+      />
     </div>
   );
 }

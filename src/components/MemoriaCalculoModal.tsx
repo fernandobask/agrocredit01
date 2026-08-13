@@ -1,5 +1,5 @@
 import React, { useState, useMemo, useRef } from "react";
-import { X, Calculator, Copy, Check, Printer, ShieldCheck, Download, Search, Table, Layers, ArrowRight, Maximize2, Minimize2, AlertTriangle, AlertCircle, DollarSign, Calendar, FileText, CheckCircle2, RotateCcw, FileSpreadsheet, Edit3, Eye } from "lucide-react";
+import { X, Calculator, Copy, Check, Printer, ShieldCheck, Download, Search, Table, Layers, ArrowRight, Maximize2, Minimize2, AlertTriangle, AlertCircle, DollarSign, Calendar, FileText, CheckCircle2, RotateCcw, FileSpreadsheet, Edit3, Eye, ExternalLink } from "lucide-react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { formatCurrency, formatDate, calcularProjecaoMensal, exportMensalToCSV, exportAtrasosToCSV, parseDateSafely, getDaysBetween, formatCSVNumber } from "../utils/math";
 import { Contrato, ProjecaoParcela, Indexador, IndexadorRates, AssociatedDocument } from "../types";
@@ -546,27 +546,27 @@ Manual de Crédito Rural (MCR - Banco Central) e Resoluções do CMN.
   };
 
   return (
-    <div className={`fixed inset-0 bg-slate-900/80 backdrop-blur-xs flex items-center justify-center z-50 animate-fade-in ${isMaximized ? 'p-1 sm:p-2' : 'p-3 sm:p-4'}`}>
-      <div className={`bg-white rounded-2xl shadow-2xl border border-slate-200 flex flex-col overflow-hidden transition-all duration-200 ${
+    <div className={`fixed inset-0 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center z-50 animate-fade-in ${isMaximized ? 'p-1 sm:p-2' : 'p-3 sm:p-4'}`}>
+      <div className={`bg-slate-50 rounded-2xl shadow-2xl border border-slate-200 flex flex-col overflow-hidden text-slate-800 transition-all duration-200 ${
         isMaximized 
           ? 'w-[99vw] h-[98vh] max-w-none max-h-none' 
           : 'w-full max-w-7xl h-[92vh] max-h-[94vh]'
       }`}>
         
         {/* Modal Header */}
-        <div className="bg-slate-900 text-white p-3 sm:p-4 flex items-center justify-between border-b border-slate-800 shrink-0">
+        <div className="bg-white p-3 sm:p-4 flex items-center justify-between border-b border-slate-200 shrink-0">
           <div className="flex items-center gap-3">
-            <div className="p-2 bg-emerald-500/20 text-emerald-400 rounded-xl border border-emerald-500/30">
+            <div className="p-2 bg-emerald-100 text-emerald-800 rounded-xl border border-emerald-300">
               <Table className="w-5 h-5 sm:w-6 sm:h-6" />
             </div>
             <div>
               <div className="flex items-center gap-2">
-                <h3 className="text-sm sm:text-base font-bold text-white">Memória de Cálculo Mensal Detalhada</h3>
-                <span className="bg-emerald-500/20 text-emerald-300 text-[10px] font-bold px-2 py-0.5 rounded border border-emerald-500/30 hidden sm:inline-block">
+                <h3 className="text-sm sm:text-base font-black text-slate-900">Memória de Cálculo Mensal Detalhada</h3>
+                <span className="bg-emerald-100 text-emerald-800 text-[10px] font-bold px-2 py-0.5 rounded border border-emerald-300 hidden sm:inline-block">
                   VISÃO ESPECIALISTA EXCEL
                 </span>
               </div>
-              <p className="text-xs text-slate-400">
+              <p className="text-xs text-slate-500">
                 Contrato Nº {contrato.numero || "S/N"} &bull; Devedor: {contrato.emitente || "Não informado"} &bull; {cenarioNome}
               </p>
             </div>
@@ -575,16 +575,16 @@ Manual de Crédito Rural (MCR - Banco Central) e Resoluções do CMN.
           <div className="flex items-center gap-1.5">
             <button
               onClick={() => setIsMaximized(!isMaximized)}
-              className="text-slate-400 hover:text-white p-1.5 sm:p-2 rounded-lg hover:bg-slate-800 transition cursor-pointer flex items-center gap-1 text-xs font-semibold"
+              className="p-2 text-slate-500 hover:text-slate-800 hover:bg-slate-100 rounded-xl transition cursor-pointer flex items-center gap-1 text-xs font-semibold"
               title={isMaximized ? "Janela Normal" : "Expandir Tela Cheia"}
             >
-              {isMaximized ? <Minimize2 className="w-4 h-4 text-emerald-400" /> : <Maximize2 className="w-4 h-4 text-emerald-400" />}
+              {isMaximized ? <Minimize2 className="w-4 h-4 text-emerald-700" /> : <Maximize2 className="w-4 h-4 text-emerald-700" />}
               <span className="hidden sm:inline">{isMaximized ? "Restaurar" : "Tela Cheia"}</span>
             </button>
             <button
               onClick={onClose}
-              className="text-slate-400 hover:text-white p-1.5 sm:p-2 rounded-lg hover:bg-slate-800 transition cursor-pointer"
-              title="Fechar (Esc)"
+              className="p-2 text-slate-500 hover:text-red-600 hover:bg-red-50 rounded-xl transition cursor-pointer"
+              title="Fechar"
             >
               <X className="w-5 h-5" />
             </button>
@@ -1501,17 +1501,43 @@ Manual de Crédito Rural (MCR - Banco Central) e Resoluções do CMN.
               )}
 
               {/* BACEN & Legal Disclaimer */}
-              <div className="p-3.5 bg-amber-50 rounded-xl border border-amber-200/80 text-[11px] text-amber-900 space-y-1">
-                <span className="font-bold uppercase tracking-wider block text-amber-950 flex items-center gap-1">
-                  <ShieldCheck className="w-3.5 h-3.5 text-amber-700" />
-                  Fundamentação Legal da Apuração de Mora e Atraso (Crédito Rural):
+              <div className="p-4 bg-amber-50/90 rounded-xl border border-amber-200 text-xs text-amber-950 space-y-2">
+                <span className="font-extrabold uppercase tracking-wider block text-amber-950 flex items-center gap-1.5">
+                  <ShieldCheck className="w-4 h-4 text-amber-700" />
+                  Fundamentação Legal e Súmulas Vinculantes Aplicadas (Crédito Rural):
                 </span>
-                <p>
-                  &bull; <strong>Multa Moratória Limitada a 2%:</strong> Artigo 52, § 1º do Código de Defesa do Consumidor (Lei 8.078/90) c/c Decreto-Lei nº 167/67 e MCR (Manual de Crédito Rural - BACEN).
-                </p>
-                <p>
-                  &bull; <strong>Juros de Mora Limitados a 1% ao ano/mês:</strong> Artigo 5º, parágrafo único do Decreto-Lei nº 167/67 e Súmula 379 do Superior Tribunal de Justiça (STJ), sendo vedada a cobrança de taxa de rentabilidade superior durante a inadimplência em crédito rural.
-                </p>
+                <ul className="space-y-2 text-[11px] leading-relaxed">
+                  <li className="flex flex-col sm:flex-row sm:items-center justify-between gap-1">
+                    <span>&bull; <strong>Súmula 298 STJ (Alongamento MCR 2-6-4):</strong> O alongamento da dívida rural é direito do produtor rural e dever do banco diante de intempéries ou queda de preços.</span>
+                    <a href="https://www.stj.jus.br/docs_internet/revista/eletronica/stj-revista-sumulas-2010_13_capSumula298.pdf" target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 text-[10px] font-bold text-amber-900 underline shrink-0">
+                      <ExternalLink className="w-3 h-3 text-amber-700" /> Fonte STJ
+                    </a>
+                  </li>
+                  <li className="flex flex-col sm:flex-row sm:items-center justify-between gap-1">
+                    <span>&bull; <strong>Súmula 176 STJ (Nulidade do CDI):</strong> É nula a cláusula que atrela o crédito rural ao CDI ou taxa de mercado flutuante.</span>
+                    <a href="https://www.stj.jus.br/docs_internet/revista/eletronica/stj-revista-sumulas-2006_3_capSumula176.pdf" target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 text-[10px] font-bold text-amber-900 underline shrink-0">
+                      <ExternalLink className="w-3 h-3 text-amber-700" /> Fonte STJ
+                    </a>
+                  </li>
+                  <li className="flex flex-col sm:flex-row sm:items-center justify-between gap-1">
+                    <span>&bull; <strong>Súmula 288 STJ (Teto de Juros 12% a.a.):</strong> Ausente taxa regulada específica do CMN, os juros remuneratórios são limitados a 12% a.a.</span>
+                    <a href="https://www.stj.jus.br/docs_internet/revista/eletronica/stj-revista-sumulas-2010_13_capSumula288.pdf" target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 text-[10px] font-bold text-amber-900 underline shrink-0">
+                      <ExternalLink className="w-3 h-3 text-amber-700" /> Fonte STJ
+                    </a>
+                  </li>
+                  <li className="flex flex-col sm:flex-row sm:items-center justify-between gap-1">
+                    <span>&bull; <strong>Súmula 93 STJ / Dec-Lei 167/67 (Teto Moratório):</strong> Os juros moratórios em atraso rural são limitados no máximo a 1% ao ano.</span>
+                    <a href="https://www.stj.jus.br/docs_internet/revista/eletronica/stj-revista-sumulas-2006_1_capSumula93.pdf" target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 text-[10px] font-bold text-amber-900 underline shrink-0">
+                      <ExternalLink className="w-3 h-3 text-amber-700" /> Fonte STJ
+                    </a>
+                  </li>
+                  <li className="flex flex-col sm:flex-row sm:items-center justify-between gap-1">
+                    <span>&bull; <strong>Lei 8.078/90 Art. 39, I (Venda Casada) & Decreto 22.626/33 (Lei de Usura):</strong> Veda seguros compulsórios e juros abusivos.</span>
+                    <a href="https://www.planalto.gov.br/ccivil_03/decreto/d22626.htm" target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 text-[10px] font-bold text-amber-900 underline shrink-0">
+                      <ExternalLink className="w-3 h-3 text-amber-700" /> Fonte Planalto
+                    </a>
+                  </li>
+                </ul>
               </div>
 
             </div>

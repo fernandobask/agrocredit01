@@ -4,8 +4,118 @@ import { createServer as createViteServer } from "vite";
 import { GoogleGenAI, Type } from "@google/genai";
 import dotenv from "dotenv";
 import { jsonrepair } from "jsonrepair";
+import * as pdfParseModule from "pdf-parse";
+import * as XLSX from "xlsx";
+const pdfParse: any = (pdfParseModule as any).default || pdfParseModule;
 
 dotenv.config();
+
+// Helper to check if a MIME type is directly supported by Gemini API inlineData
+function isGeminiSupportedMimeType(mime: string): boolean {
+  if (!mime) return false;
+  const lower = mime.toLowerCase().trim();
+  if (
+    lower.startsWith("image/") ||
+    lower.startsWith("audio/") ||
+    lower.startsWith("video/") ||
+    lower === "application/pdf" ||
+    lower === "text/plain" ||
+    lower === "text/csv" ||
+    lower === "text/html" ||
+    lower === "text/markdown" ||
+    lower === "text/xml" ||
+    lower === "application/json"
+  ) {
+    return true;
+  }
+  return false;
+}
+
+// Helper to convert Excel spreadsheets (.xlsx, .xls) and text files to CSV string
+function convertOfficeOrSpreadsheetToText(fileDataB64: string, fileName: string = "", mimeType: string = ""): { text: string; csvFormat?: string } | null {
+  const cleanB64 = fileDataB64.replace(/^data:[^;]+;base64,/, "");
+  const lowerName = (fileName || "").toLowerCase();
+  const lowerMime = (mimeType || "").toLowerCase();
+
+  const isExcelOrSpreadsheet = 
+    lowerMime.includes("spreadsheet") ||
+    lowerMime.includes("excel") ||
+    lowerMime.includes("csv") ||
+    lowerName.endsWith(".xlsx") ||
+    lowerName.endsWith(".xls") ||
+    lowerName.endsWith(".csv") ||
+    lowerName.endsWith(".ods");
+
+  if (isExcelOrSpreadsheet) {
+    try {
+      const buffer = Buffer.from(cleanB64, "base64");
+      const workbook = XLSX.read(buffer, { type: "buffer" });
+      
+      let combinedCsv = "";
+      workbook.SheetNames.forEach((sheetName) => {
+        const sheet = workbook.Sheets[sheetName];
+        if (sheet) {
+          const csv = XLSX.utils.sheet_to_csv(sheet);
+          if (csv && csv.trim()) {
+            combinedCsv += `--- PLANILHA/ABA: ${sheetName} ---\n${csv}\n\n`;
+          }
+        }
+      });
+
+      if (combinedCsv.trim()) {
+        return { text: combinedCsv, csvFormat: combinedCsv };
+      }
+    } catch (err) {
+      console.warn(`[Spreadsheet Parser] Failed to parse file "${fileName}":`, err);
+    }
+  }
+
+  // Attempt reading as UTF-8 text
+  try {
+    const textContent = Buffer.from(cleanB64, "base64").toString("utf-8");
+    if (textContent && !textContent.includes("\0") && textContent.length > 5) {
+      return { text: textContent };
+    }
+  } catch (e) {}
+
+  return null;
+}
+
+// Helper to safely prepare file parts for Gemini API without 400 Unsupported MIME type crashes
+function prepareGeminiFilePart(fileDataB64: string, mimeType?: string, fileName: string = ""): { inlineData?: { data: string; mimeType: string }; textContent?: string } {
+  if (!fileDataB64) return {};
+  const cleanB64 = fileDataB64.replace(/^data:[^;]+;base64,/, "");
+  const cleanMime = (mimeType || "").toLowerCase().trim();
+
+  // If mimeType is unsupported or it's an Excel / Office document
+  if (!isGeminiSupportedMimeType(cleanMime) || cleanMime.includes("spreadsheet") || cleanMime.includes("excel") || fileName.match(/\.(xlsx|xls|docx|doc|ods)$/i)) {
+    console.log(`[Gemini File Sanitizer] Intercepted unsupported file "${fileName}" (${cleanMime}). Extracting contents...`);
+    const parsed = convertOfficeOrSpreadsheetToText(cleanB64, fileName, cleanMime);
+    if (parsed && parsed.text) {
+      const b64Csv = Buffer.from(parsed.text, "utf-8").toString("base64");
+      return {
+        inlineData: {
+          data: b64Csv,
+          mimeType: "text/csv"
+        },
+        textContent: `\n--- CONTEÚDO EXTRAÍDO DO ARQUIVO (${fileName}) ---\n${parsed.text.slice(0, 30000)}\n---\n`
+      };
+    } else {
+      console.warn(`[Gemini File Sanitizer] Unable to convert binary file "${fileName}" (${cleanMime}). Passing metadata text.`);
+      return {
+        textContent: `\n[ARQUIVO ANEXADO: ${fileName} (${cleanMime}) - Conteúdo de arquivo binário não suportado para leitura direta.]\n`
+      };
+    }
+  }
+
+  // Supported MIME type
+  return {
+    inlineData: {
+      data: cleanB64,
+      mimeType: cleanMime || "application/pdf"
+    }
+  };
+}
 
 const app = express();
 const PORT = 3000;
@@ -235,9 +345,9 @@ async function callGeminiWithFallback(
 ) {
   const modelsToTry = [
     "gemini-2.5-flash",
-    "gemini-2.0-flash",
-    "gemini-1.5-flash",
-    "gemini-2.5-pro"
+    "gemini-3.5-flash",
+    "gemini-2.5-pro",
+    "gemini-flash-latest"
   ];
   let lastError: any = null;
 
@@ -267,14 +377,14 @@ async function callGeminiWithFallback(
         lastError = error;
         const errorMsg = error.message || String(error);
         const status = error.status || error.code;
-        const isQuotaExceeded = errorMsg.includes("exceeded your current quota") || errorMsg.includes("quota");
-        const isTransient = status === 503 || status === 429 || errorMsg.includes("503") || errorMsg.includes("429") || errorMsg.includes("UNAVAILABLE") || errorMsg.includes("RESOURCE_EXHAUSTED");
+        const isQuotaExceeded = errorMsg.includes("exceeded your current quota") || errorMsg.includes("quota") || errorMsg.includes("RESOURCE_EXHAUSTED") || status === 429;
+        const isTransient = status === 503 || errorMsg.includes("503") || errorMsg.includes("UNAVAILABLE");
 
         console.warn(`[Gemini API] Failed with model ${model} (attempt ${attempt}/${maxRetries}): ${errorMsg.slice(0, 150)}`);
 
-        // If hard quota for this model is exceeded, immediately skip to next model in list
+        // If hard quota for this model is exceeded, immediately skip to next model in list without retrying
         if (isQuotaExceeded) {
-          console.warn(`[Gemini API] Quota limit hit for model ${model}. Switching to next available model...`);
+          console.warn(`[Gemini API] Quota limit (429/RESOURCE_EXHAUSTED) hit for model ${model}. Switching immediately to next available model...`);
           break;
         }
 
@@ -522,14 +632,14 @@ function getMockContractData() {
 function getMockLaudoData() {
   return {
     irregularidadesEncontradas: true,
-    resumo: "Análise técnica realizada a partir do cruzamento de dados entre a Cédula de Produto Rural principal (C30528645-1) e os documentos auxiliares (Demonstrativo DDC_0802 e o Plano de Recuperação de Crédito). Foram identificadas divergências graves de valores, inclusão de encargos moratórios indevidos e tarifas não discriminadas nas parcelas de amortização.",
+    resumo: "Análise técnica pericial realizada a partir do cruzamento da Cédula de Produto Rural principal (C30528645-1) com os demonstrativos de conta vinculada (DDC_0802 e Plano de Reestruturação). Foram identificadas violações frontais à jurisprudência pacificada do Superior Tribunal de Justiça (STJ) e às normas do Manual de Crédito Rural (MCR / BACEN), incluindo majoração unilateral de saldo devedor principal, anatocismo moratório indevido e venda casada de seguro prestamista.",
     pontosDeAtencao: [
-      "Divergência expressiva no valor principal da Parcela 003 de mais de 39% em relação ao originalmente pactuado.",
-      "Cobrança unilateral de encargos moratórios (multas e juros moratórios) antecipados no plano de recuperação de crédito.",
-      "Lançamento de valores na rubrica 'Outros' (Taxas/Seguros) no demonstrativo de evolução DDC_0802 sem previsão contratual clara, indício de venda casada.",
-      "Cobrança de seguro de proteção financeira embutido e tarifa de registro de cédula sem autorização expressa."
+      "Divergência expressiva no valor principal da Parcela 003 (majoração unilateral de 39% de R$ 575.000,29 para R$ 803.393,63), violando o ato jurídico perfeito e os artigos 14 da Lei 4.829/65 e MCR 2-6-4.",
+      "Inclusão de R$ 71.317,07 de encargos moratórios antecipados de forma indevida, desrespeitando o teto de 1% a.a. estipulado na Súmula 93 do STJ e Art. 5º do Decreto-Lei 167/67.",
+      "Cobrança não discriminada de R$ 15.180,30 na rubrica 'Outros' no DDC_0802, caracterizando venda casada vedada pelo Art. 39, I do Código de Defesa do Consumidor (Lei 8.078/90).",
+      "Inclusão de seguro de proteção financeira de R$ 12.450,00 sem apólice anexa ou anuência do emitente, em desconformidade com as regras do Conselho Monetário Nacional (CMN)."
     ],
-    recomendacao: "Recomenda-se ingressar com pedido de revisão administrativa ou contestação judicial contra a instituição credora (Sicredi), exigindo o recálculo do saldo devedor conforme o cronograma original pactuado de R$ 575.000,29 para a Parcela 003, além do expurgo dos encargos moratórios antecipados de R$ 71.317,07 e a devolução em dobro de taxas de seguro embutidas não discriminadas.",
+    recomendacao: "Recomenda-se ingressar com Notificação Extrajudicial com cópia do laudo ou Ação Revisional/Contestação com pedido de tutela de urgência (Súmulas 298 e 288 do STJ), exigindo o recálculo do saldo devedor com base no principal original de R$ 575.000,29, o expurgo dos juros moratórios antecipados de R$ 71.317,07 e a restituição em dobro das tarifas de venda casada.",
     divergencias: [
       {
         campo: "Valor Principal Parcela 003",
@@ -537,15 +647,17 @@ function getMockLaudoData() {
         valorDocumento: "R$ 803.393,63",
         status: "divergente",
         documentoAuxiliar: "3 - Plano de recuperação de credito JULINERE GOULART BENTOS - C30528645-1 - 18-06-2026",
-        detalhe: "O principal da Parcela 003 foi majorado unilateralmente no plano de renegociação (39% acima do contrato), gerando um aumento indevido de R$ 228.393,34."
+        detalhe: "O principal da Parcela 003 foi majorado unilateralmente no plano de renegociação (39% acima do contrato), gerando um aumento indevido de R$ 228.393,34 sem amparo em norma técnica do CMN.",
+        fundamentacaoLegal: "Lei 4.829/1965 Art. 14, MCR Capítulo 2 (Seção 6 Item 4) e Súmula 298 do STJ"
       },
       {
-        campo: "Encargos Moratórios Indevidos",
+        campo: "Encargos Moratórios Antecipados",
         valorContrato: "R$ 0,00",
         valorDocumento: "R$ 71.317,07",
         status: "divergente",
         documentoAuxiliar: "3 - Plano de recuperação de credito JULINERE GOULART BENTOS - C30528645-1 - 18-06-2026",
-        detalhe: "Juros moratórios e multas embutidos de forma indevida e antecipada no plano de pagamento, sem que houvesse atraso correspondente pactuado."
+        detalhe: "Juros moratórios e multas embutidos de forma indevida e antecipada no plano de pagamento, extrapolando o teto legal permitido em adimplemento ou prorrogação rural.",
+        fundamentacaoLegal: "Súmula 93 do STJ, Decreto-Lei nº 167/1967 Art. 5º Parágrafo Único e Súmula 379 do STJ"
       },
       {
         campo: "Outros Encargos (Tarifa Sem Descrição)",
@@ -553,7 +665,8 @@ function getMockLaudoData() {
         valorDocumento: "R$ 15.180,30",
         status: "atencao",
         documentoAuxiliar: "2 - Demonstrativo da evolução da divida DDC_0802_C30528645-1",
-        detalhe: "Lançamento genérico na rubrica 'Outros' no demonstrativo DDC_0802, indício clássico de venda casada ou tarifa oculta sem justificativa contratual."
+        detalhe: "Lançamento genérico na rubrica 'Outros' no demonstrativo DDC_0802, indício clássico de venda casada ou tarifa oculta sem justificativa contratual ou prestação de serviço.",
+        fundamentacaoLegal: "Lei 8.078/1990 (CDC) Artigo 39 Inciso I e Resoluções do Banco Central do Brasil (BACEN)"
       },
       {
         campo: "Seguro de Proteção Financeira Oculto",
@@ -561,7 +674,8 @@ function getMockLaudoData() {
         valorDocumento: "R$ 12.450,00",
         status: "atencao",
         documentoAuxiliar: "1 - Cédula de Produto Rural C30528645-1",
-        detalhe: "Cobrança embutida de seguro prestamista sem apólice anexa ou autorização expressa do emitente na Cédula original."
+        detalhe: "Cobrança embutida de seguro prestamista sem apólice anexa ou autorização expressa do emitente na Cédula original.",
+        fundamentacaoLegal: "Lei 8.078/1990 Artigo 39, I (Vedação de Venda Casada) e Súmula 473 do STJ"
       },
       {
         campo: "Divergência na Taxa de Juros Efetiva",
@@ -569,7 +683,8 @@ function getMockLaudoData() {
         valorDocumento: "13,85% a.a. no cálculo",
         status: "atencao",
         documentoAuxiliar: "2 - Demonstrativo da evolução da divida DDC_0802_C30528645-1",
-        detalhe: "Juros efetivos cobrados no demonstrativo superam a taxa nominal pactuada no contrato original, indicando capitalização diária acima dos limites."
+        detalhe: "Juros efetivos cobrados no demonstrativo superam a taxa nominal pactuada no contrato original e o teto subsidiado do Plano Safra.",
+        fundamentacaoLegal: "Súmula 288 do STJ (Teto de 12% a.a. no Crédito Rural) e Decreto Federal 22.626/1933"
       },
       {
         campo: "Tarifa de Registro de Cédula (TAC)",
@@ -577,7 +692,8 @@ function getMockLaudoData() {
         valorDocumento: "R$ 3.500,00",
         status: "atencao",
         documentoAuxiliar: "2 - Demonstrativo da evolução da divida DDC_0802_C30528645-1",
-        detalhe: "Cobrança de tarifa de abertura/registro de cédula sem comprovação de prestação de serviço individualizado ao produtor rural."
+        detalhe: "Cobrança de tarifa de abertura/registro de cédula sem comprovação de prestação de serviço individualizado ao produtor rural.",
+        fundamentacaoLegal: "Súmula 297 do STJ e Resolução CMN nº 3.919/2010"
       },
       {
         campo: "Prazos & Carência de Plantio",
@@ -585,18 +701,117 @@ function getMockLaudoData() {
         valorDocumento: "180 dias de carência",
         status: "conforme",
         documentoAuxiliar: "1 - Cédula de Produto Rural C30528645-1",
-        detalhe: "O cronograma de amortização respeita os prazos de carência agrícola estipulados no Manual de Crédito Rural (MCR) do BACEN para proteção de safra."
+        detalhe: "O cronograma de amortização respeita os prazos de carência agrícola estipulados no Manual de Crédito Rural (MCR) do BACEN para proteção de safra.",
+        fundamentacaoLegal: "Manual de Crédito Rural (MCR Capítulo 2 Seção 3 Item 1) - BACEN"
       },
       {
-        campo: "Índice de Correção (CDI)",
-        valorContrato: "100% CDI",
-        valorDocumento: "100% CDI",
-        status: "conforme",
+        campo: "Índice de Correção Flutuante (CDI)",
+        valorContrato: "Fixa / Pré ou TLP",
+        valorDocumento: "100% CDI Flutuante",
+        status: "atencao",
         documentoAuxiliar: "1 - Cédula de Produto Rural C30528645-1",
-        detalhe: "O indexador de correção pós-fixada foi aplicado corretamente de acordo com as taxas divulgadas pela CETIP e regras financeiras vigentes."
+        detalhe: "Indexador atrelado à taxa CDI flutuante em contrato de crédito rural, prática vedada por sujeitar o produtor ao arbítrio de taxa de mercado financeiro.",
+        fundamentacaoLegal: "Súmula 176 do STJ, Lei 4.829/1965 e Decreto-Lei 167/1967"
       }
     ]
   };
+}
+
+// Helper to extract text and regex values from PDF, Excel or Text files
+async function extractPdfTextAndFallbackData(fileData: string, fileName: string) {
+  let extractedText = "";
+  let foundPrincipal = 0;
+  let foundEmitente = "";
+  let foundCredor = "";
+  let foundNumero = "";
+  let foundTaxaJuros = 0;
+
+  try {
+    const cleanB64 = fileData.replace(/^data:[^;]+;base64,/, "");
+    if (fileName.match(/\.(xlsx|xls|csv|ods)$/i)) {
+      const parsed = convertOfficeOrSpreadsheetToText(cleanB64, fileName, "");
+      if (parsed) extractedText = parsed.text;
+    } else {
+      try {
+        const pdfBuffer = Buffer.from(cleanB64, "base64");
+        const pdfData = await pdfParse(pdfBuffer);
+        extractedText = pdfData.text || "";
+        console.log(`[PDF Parse] Extracted ${extractedText.length} characters of raw text from "${fileName}".`);
+      } catch (pdfErr) {
+        const parsed = convertOfficeOrSpreadsheetToText(cleanB64, fileName, "");
+        if (parsed) extractedText = parsed.text;
+      }
+    }
+    
+    if (extractedText) {
+      // 1. Extract principal amount
+      const currencyMatches = Array.from(extractedText.matchAll(/R\$\s*([\d]{1,3}(?:\.[\d]{3})*(?:,[\d]{2})?)/gi));
+      const numericValues: number[] = [];
+      for (const match of currencyMatches) {
+        const cleanStr = match[1].replace(/\./g, "").replace(",", ".");
+        const val = parseFloat(cleanStr);
+        if (!isNaN(val) && val >= 1000) {
+          numericValues.push(val);
+        }
+      }
+      if (numericValues.length > 0) {
+        numericValues.sort((a, b) => b - a);
+        foundPrincipal = numericValues[0];
+      }
+
+      const labelMatch = extractedText.match(/(?:VALOR|PRINCIPAL|EMISS[AÃ]O|FINANCIADO|LIMITE|VALOR DA CÉDULA)\s*:?\s*R?\$?\s*([\d]{1,3}(?:\.[\d]{3})*(?:,[\d]{2})?)/i);
+      if (labelMatch) {
+        const cleanVal = labelMatch[1].replace(/\./g, "").replace(",", ".");
+        const parsedLabelVal = parseFloat(cleanVal);
+        if (!isNaN(parsedLabelVal) && parsedLabelVal >= 1000) {
+          foundPrincipal = parsedLabelVal;
+        }
+      }
+
+      // 2. Extract Emitente
+      const emitenteMatch = extractedText.match(/(?:EMITENTE|DEVEDOR|PRODUTOR|NOME\/RAZÃO SOCIAL|NOME DO EMITENTE|NOME)\s*:?\s*([A-ZÁÉÍÓÚÂÊÔÃÕÇ\s]{4,50})/i);
+      if (emitenteMatch) {
+        const candidate = emitenteMatch[1].trim().replace(/\s+/g, " ");
+        if (candidate.length > 3 && !candidate.toUpperCase().includes("VALOR") && !candidate.toUpperCase().includes("CEDULA")) {
+          foundEmitente = candidate;
+        }
+      }
+
+      // 3. Extract Credor
+      const credorMatch = extractedText.match(/(?:CREDOR|INSTITUIÇÃO|FINANCEIRA|COOPERATIVA|BANCO|CREDORA)\s*:?\s*([A-ZÁÉÍÓÚÂÊÔÃÕÇ\s]{4,50})/i);
+      if (credorMatch) {
+        const candidate = credorMatch[1].trim().replace(/\s+/g, " ");
+        if (candidate.length > 3) {
+          foundCredor = candidate;
+        }
+      }
+
+      // 4. Extract Contract / CPR Number
+      const numeroMatch = extractedText.match(/(?:CONTRATO|Nº|NUMERO|CPR Nº|CEDULA Nº)\s*:?\s*([A-Z0-9/.-]{4,25})/i);
+      if (numeroMatch) {
+        foundNumero = numeroMatch[1].trim();
+      }
+
+      // 5. Extract Taxa de Juros
+      const taxaMatch = extractedText.match(/(?:TAXA|JUROS)\s*:?\s*([\d]{1,2}(?:[.,][\d]{1,4})?)\s*%/i);
+      if (taxaMatch) {
+        const cleanTaxa = taxaMatch[1].replace(",", ".");
+        const parsedTaxa = parseFloat(cleanTaxa);
+        if (!isNaN(parsedTaxa)) {
+          foundTaxaJuros = parsedTaxa;
+        }
+      }
+    }
+  } catch (e: any) {
+    console.warn(`[PDF Parse] Could not extract raw text from PDF "${fileName}":`, e?.message);
+  }
+
+  if (!foundEmitente) {
+    const cleanFileName = (fileName || "Contrato").replace(/\.[^/.]+$/, "").replace(/[-_]/g, " ").trim();
+    foundEmitente = `Produtor (${cleanFileName})`;
+  }
+
+  return { extractedText, foundPrincipal, foundEmitente, foundCredor, foundNumero, foundTaxaJuros };
 }
 
 // 2. Extract contract metadata using Gemini AI
@@ -611,23 +826,55 @@ app.post("/api/analyze-contract", async (req, res) => {
   const isDdc = nameLower.includes("ddc") || nameLower.includes("demonstrativo");
   const isPlano = nameLower.includes("plano") || nameLower.includes("recupe") || nameLower.includes("evolu");
   const isC205 = nameLower.includes("c20530576") || nameLower.includes("c205305764") || nameLower.includes("c20530576-4");
-  const isKnownDemo = nameLower.includes("julinere") || isC205 || nameLower.includes("c30528645") || isDdc || isPlano;
+  const isKnownDemo = nameLower.includes("julinere") || isC205 || nameLower.includes("c30528645");
+
+  let pdfExtractedText = "";
+  let pdfInfo: any = {};
+  try {
+    pdfInfo = await extractPdfTextAndFallbackData(fileData, fileName || "document.pdf");
+    pdfExtractedText = pdfInfo.extractedText;
+  } catch (err) {}
+
+  const regexExtractedPrincipal = pdfInfo.foundPrincipal || 0;
 
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey || apiKey === "MY_GEMINI_API_KEY") {
     console.warn("[Gemini API] API Key not set. Serving offline fallback mock data.");
-    if (isDdc) {
-      const mockDdc = getMockDdcData();
-      if (isC205) mockDdc.numero = "C20530576-4";
-      return res.json(mockDdc);
-    } else if (isPlano) {
-      const mockPlano = getMockPlanoRecuperacaoData();
-      if (isC205) mockPlano.numero = "C20530576-4";
-      return res.json(mockPlano);
+    if (isKnownDemo) {
+      if (isDdc) {
+        const mockDdc = getMockDdcData();
+        if (isC205) mockDdc.numero = "C20530576-4";
+        return res.json(mockDdc);
+      } else if (isPlano) {
+        const mockPlano = getMockPlanoRecuperacaoData();
+        if (isC205) mockPlano.numero = "C20530576-4";
+        return res.json(mockPlano);
+      } else {
+        const mockCpr = getMockCprData();
+        if (isC205) mockCpr.numero = "C20530576-4";
+        if (regexExtractedPrincipal > 0) {
+          mockCpr.valorPrincipal = regexExtractedPrincipal;
+          mockCpr.valorEmissao = regexExtractedPrincipal;
+        }
+        return res.json(mockCpr);
+      }
     } else {
-      const mockCpr = getMockCprData();
-      if (isC205) mockCpr.numero = "C20530576-4";
-      return res.json(mockCpr);
+      const cleanedName = (fileName || "Contrato").replace(/\.[^/.]+$/, "");
+      const isDdcFile = cleanedName.toUpperCase().includes("DDC") || cleanedName.toUpperCase().includes("FICHA") || cleanedName.toUpperCase().includes("MEMORIA");
+      
+      return res.json({
+        numero: pdfInfo.foundNumero || cleanedName,
+        modalidade: isDdcFile ? "Demonstrativo de Dívida / DDC" : "Cédula de Produto Rural (CPR)",
+        emitente: pdfInfo.foundEmitente || `Produtor (${cleanedName})`,
+        credor: pdfInfo.foundCredor || "Instituição Financeira Credora",
+        dataEmissao: new Date().toISOString().split("T")[0],
+        dataVencimento: new Date(Date.now() + 365*24*3600*1000*3).toISOString().split("T")[0],
+        valorPrincipal: regexExtractedPrincipal,
+        taxaJurosAnual: pdfInfo.foundTaxaJuros || 0,
+        indexador: "CDI",
+        tipoDocumento: isDdcFile ? "DDC" : "CONTRATO",
+        cronogramaParcelas: []
+      });
     }
   }
 
@@ -643,14 +890,17 @@ app.post("/api/analyze-contract", async (req, res) => {
 
     console.log(`[Gemini API] Analyzing contract "${fileName}" (${mimeType})...`);
 
-    const imagePart = {
-      inlineData: {
-        data: fileData,
-        mimeType: mimeType
-      }
-    };
+    const filePart = prepareGeminiFilePart(fileData, mimeType, fileName || "document.pdf");
 
-    const promptText = `
+    let textPrefix = "";
+    if (pdfExtractedText && pdfExtractedText.length > 50) {
+      textPrefix = `TEXTO EXTRAÍDO DIRETAMENTE DO DOCUMENTO:\n"""\n${pdfExtractedText.slice(0, 15000)}\n"""\n\n`;
+    }
+    if (filePart.textContent) {
+      textPrefix += `${filePart.textContent}\n\n`;
+    }
+
+    const promptText = `${textPrefix}
 Você é um especialista em análise de contratos de crédito rural, Cédulas de Produto Rural (CPR) e Demonstrativos de Evolução da Dívida rurais.
 Analise o documento fornecido (que pode ser uma CPR, contrato ou um demonstrativo descritivo/evolução de dívidas do banco) e extraia de forma precisa todos os parâmetros principais e o cronograma detalhado de parcelas.
 
@@ -686,8 +936,14 @@ Se o documento contiver um demonstrativo ou tabela com colunas como "Principal",
 Certifique-se de que o JSON gerado seja válido e siga exatamente a estrutura solicitada. Não inclua comentários adicionais no JSON.
 `;
 
+    const contents: any[] = [];
+    if (filePart.inlineData) {
+      contents.push({ inlineData: filePart.inlineData });
+    }
+    contents.push(promptText);
+
     const response = await callGeminiWithFallback(ai, {
-      contents: [imagePart, promptText],
+      contents: contents,
       config: {
         responseMimeType: "application/json",
         responseSchema: {
@@ -745,6 +1001,15 @@ Certifique-se de que o JSON gerado seja válido e siga exatamente a estrutura so
       }
     }
     
+    // Ensure valorPrincipal is valid
+    if (!parsedData.valorPrincipal || parsedData.valorPrincipal <= 0) {
+      if (parsedData.valorEmissao && parsedData.valorEmissao > 0) {
+        parsedData.valorPrincipal = parsedData.valorEmissao;
+      } else if (regexExtractedPrincipal > 0) {
+        parsedData.valorPrincipal = regexExtractedPrincipal;
+      }
+    }
+
     console.log("[Gemini API] Contract analysis completed successfully:", parsedData);
     res.json(parsedData);
   } catch (err: any) {
@@ -762,22 +1027,26 @@ Certifique-se de que o JSON gerado seja válido e siga exatamente a estrutura so
       } else {
         const mockCpr = getMockCprData();
         if (isC205) mockCpr.numero = "C20530576-4";
+        if (regexExtractedPrincipal > 0) {
+          mockCpr.valorPrincipal = regexExtractedPrincipal;
+          mockCpr.valorEmissao = regexExtractedPrincipal;
+        }
         return res.json(mockCpr);
       }
     } else {
-      console.warn("[Gemini API] Serving structured fallback extracted from filename for file:", fileName);
+      console.warn("[Gemini API] Serving structured fallback extracted from filename and PDF text for file:", fileName);
       const cleanedName = (fileName || "Contrato").replace(/\.[^/.]+$/, "");
       const isDdcFile = cleanedName.toUpperCase().includes("DDC") || cleanedName.toUpperCase().includes("FICHA") || cleanedName.toUpperCase().includes("MEMORIA");
       
       const fallbackResult = {
-        numero: cleanedName,
+        numero: pdfInfo.foundNumero || cleanedName,
         modalidade: isDdcFile ? "Demonstrativo de Dívida / DDC" : "Cédula de Produto Rural (CPR)",
-        emitente: "JULINERE GOULART BENTOS",
-        credor: "VALE DO CERRADO (SICREDI)",
+        emitente: pdfInfo.foundEmitente || `Produtor (${cleanedName})`,
+        credor: pdfInfo.foundCredor || "Instituição Financeira Credora",
         dataEmissao: new Date().toISOString().split("T")[0],
         dataVencimento: new Date(Date.now() + 365*24*3600*1000*3).toISOString().split("T")[0],
-        valorPrincipal: 0,
-        taxaJurosAnual: 3.70,
+        valorPrincipal: regexExtractedPrincipal,
+        taxaJurosAnual: pdfInfo.foundTaxaJuros || 0,
         indexador: "CDI",
         tipoDocumento: isDdcFile ? "DDC" : "CONTRATO",
         cronogramaParcelas: []
@@ -865,41 +1134,48 @@ Caso o usuário forneça dados adicionais no futuro, você fará a comparação.
 
     promptText += `
 Gere o "Laudo de Irregularidades e Divergências" estruturado.
+Para cada irregularidade ou divergência encontrada, você DEVE fundamentar juridicamente indicando expressamente a Súmula do STJ (ex: Súmula 176 STJ para CDI, Súmula 288 STJ para Teto 12%, Súmula 298 STJ para MCR 2-6-4, Súmula 93 STJ para Mora), o Decreto-Lei 167/67, a Lei 4.829/65, a Lei 8.078/90 (CDC Art 39) ou a seção do MCR do BACEN.
+
 Retorne obrigatoriamente um JSON válido com a seguinte estrutura:
 {
   "irregularidadesEncontradas": boolean,
-  "resumo": "Um resumo geral da análise de até 2 parágrafos",
-  "pontosDeAtencao": ["ponto 1", "ponto 2", "ponto 3"],
-  "recomendacao": "Recomendação do que o produtor rural deve fazer",
+  "resumo": "Um resumo geral da análise de até 2 parágrafos, citado as Leis e Súmulas aplicáveis",
+  "pontosDeAtencao": ["ponto 1 com base legal", "ponto 2 com base legal"],
+  "recomendacao": "Recomendação do que o produtor rural deve fazer juridicamente",
   "divergencias": [
     {
-      "campo": "Nome do parâmetro divergente (ex: 'Taxa de Juros', 'Valor Amortizado da Parcela 1', 'Data de Vencimento Final', etc.)",
+      "campo": "Nome do parâmetro divergente (ex: 'Taxa de Juros', 'Valor Amortizado da Parcela 1', 'Indexador CDI', etc.)",
       "valorContrato": "O valor que consta ou deveria constar no contrato principal",
       "valorDocumento": "O valor que consta no documento auxiliar divergente",
       "status": "divergente, conforme ou atencao",
       "documentoAuxiliar": "Nome do documento auxiliar onde a discrepância foi achada",
-      "detalhe": "Explicação detalhada do porquê esse ponto diverge e o impacto para o produtor."
+      "detalhe": "Explicação detalhada do porquê esse ponto diverge e o impacto para o produtor.",
+      "fundamentacaoLegal": "Citação legal exata (Ex: 'Súmula 176 do STJ / Artigo 14 da Lei 4.829/1965' ou 'MCR 2-6-4 / Súmula 298 do STJ')"
     }
   ]
 }
 `;
 
-    // Setup input parts. First is the text prompt.
-    const contents: any[] = [promptText];
+    // Setup input parts.
+    const contents: any[] = [];
+    let extraDocTexts = "";
 
-    // If there are files with data, send them as inlineData parts so Gemini can read the actual files!
+    // If there are files with data, send them safely via prepareGeminiFilePart
     if (associatedDocuments && associatedDocuments.length > 0) {
       associatedDocuments.forEach((doc: any) => {
-        if (doc.fileData && doc.mimeType) {
-          contents.push({
-            inlineData: {
-              data: doc.fileData,
-              mimeType: doc.mimeType
-            }
-          });
+        if (doc.fileData) {
+          const docPart = prepareGeminiFilePart(doc.fileData, doc.mimeType, doc.fileName || doc.name || "document");
+          if (docPart.inlineData) {
+            contents.push({ inlineData: docPart.inlineData });
+          }
+          if (docPart.textContent) {
+            extraDocTexts += `\n${docPart.textContent}`;
+          }
         }
       });
     }
+
+    contents.unshift(promptText + extraDocTexts);
 
     const response = await callGeminiWithFallback(ai, {
       contents: contents,
@@ -925,7 +1201,8 @@ Retorne obrigatoriamente um JSON válido com a seguinte estrutura:
                   valorDocumento: { type: Type.STRING },
                   status: { type: Type.STRING, description: "divergente, conforme, atencao" },
                   documentoAuxiliar: { type: Type.STRING },
-                  detalhe: { type: Type.STRING }
+                  detalhe: { type: Type.STRING },
+                  fundamentacaoLegal: { type: Type.STRING, description: "Base legal, Súmula do STJ, Decreto ou MCR" }
                 },
                 required: ["campo", "valorContrato", "valorDocumento", "status", "documentoAuxiliar", "detalhe"]
               },
@@ -1035,24 +1312,26 @@ Responda sempre de forma profissional, direta e em formato Markdown. Não gere J
         parts.push({ text: msg.content });
       }
       
-      if (msg.fileData && msg.mimeType) {
-        parts.push({
-          inlineData: {
-            data: msg.fileData,
-            mimeType: msg.mimeType
-          }
-        });
+      if (msg.fileData) {
+        const msgPart = prepareGeminiFilePart(msg.fileData, msg.mimeType, msg.fileName);
+        if (msgPart.inlineData) {
+          parts.push({ inlineData: msgPart.inlineData });
+        }
+        if (msgPart.textContent) {
+          parts.push({ text: msgPart.textContent });
+        }
       }
 
       if (msg.attachments && Array.isArray(msg.attachments)) {
         for (const att of msg.attachments) {
-          if (att.fileData && att.mimeType) {
-            parts.push({
-              inlineData: {
-                data: att.fileData,
-                mimeType: att.mimeType
-              }
-            });
+          if (att.fileData) {
+            const attPart = prepareGeminiFilePart(att.fileData, att.mimeType, att.fileName);
+            if (attPart.inlineData) {
+              parts.push({ inlineData: attPart.inlineData });
+            }
+            if (attPart.textContent) {
+              parts.push({ text: attPart.textContent });
+            }
           }
         }
       }
@@ -1061,13 +1340,14 @@ Responda sempre de forma profissional, direta e em formato Markdown. Não gere J
       // attach them as user context so the model can read them!
       if (msgIndex === 0 && msg.role === 'user' && associatedDocuments && associatedDocuments.length > 0) {
         associatedDocuments.forEach((doc: any) => {
-          if (doc.fileData && doc.mimeType) {
-            parts.push({
-              inlineData: {
-                data: doc.fileData,
-                mimeType: doc.mimeType
-              }
-            });
+          if (doc.fileData) {
+            const docPart = prepareGeminiFilePart(doc.fileData, doc.mimeType, doc.fileName || doc.name);
+            if (docPart.inlineData) {
+              parts.push({ inlineData: docPart.inlineData });
+            }
+            if (docPart.textContent) {
+              parts.push({ text: docPart.textContent });
+            }
           }
         });
       }

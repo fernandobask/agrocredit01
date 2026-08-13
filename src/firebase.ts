@@ -14,18 +14,8 @@ import {
 import { getFirestore } from 'firebase/firestore';
 import firebaseConfig from '../firebase-applet-config.json';
 
-const finalFirebaseConfig = {
-  apiKey: import.meta.env?.VITE_FIREBASE_API_KEY || firebaseConfig.apiKey,
-  authDomain: import.meta.env?.VITE_FIREBASE_AUTH_DOMAIN || firebaseConfig.authDomain,
-  projectId: import.meta.env?.VITE_FIREBASE_PROJECT_ID || firebaseConfig.projectId,
-  storageBucket: import.meta.env?.VITE_FIREBASE_STORAGE_BUCKET || firebaseConfig.storageBucket,
-  messagingSenderId: import.meta.env?.VITE_FIREBASE_MESSAGING_SENDER_ID || firebaseConfig.messagingSenderId,
-  appId: import.meta.env?.VITE_FIREBASE_APP_ID || firebaseConfig.appId,
-};
-
-const app = initializeApp(finalFirebaseConfig);
-const firestoreDbId = import.meta.env?.VITE_FIREBASE_FIRESTORE_DATABASE_ID || (firebaseConfig as any).firestoreDatabaseId;
-export const db = firestoreDbId ? getFirestore(app, firestoreDbId) : getFirestore(app);
+const app = initializeApp(firebaseConfig);
+export const db = getFirestore(app, (firebaseConfig as any).firestoreDatabaseId);
 export const auth = getAuth(app);
 export const googleProvider = new GoogleAuthProvider();
 googleProvider.addScope('https://www.googleapis.com/auth/drive.readonly');
@@ -37,29 +27,16 @@ export const loginAnonymously = async () => {
   return await signInAnonymously(auth);
 };
 
-export const loginAnonymouslyWithName = async (name: string = "Analista Financeiro") => {
-  try {
-    const userCredential = await signInAnonymously(auth);
-    if (userCredential.user) {
-      try {
-        await updateProfile(userCredential.user, { displayName: name });
-      } catch (e) {
-        console.warn("Não foi possível atualizar o nome do perfil anônimo:", e);
-      }
+export const loginAnonymouslyWithName = async (name: string = "Fernando Gomes Santos") => {
+  const userCredential = await signInAnonymously(auth);
+  if (userCredential.user) {
+    try {
+      await updateProfile(userCredential.user, { displayName: name });
+    } catch (e) {
+      console.warn("Não foi possível atualizar o nome do perfil anônimo:", e);
     }
-    return userCredential;
-  } catch (err: any) {
-    console.warn("Firebase Anonymous Sign-In indisponível ou desativado, ativando sessão de analista local:", err);
-    return {
-      user: {
-        uid: "analista-local-" + Date.now(),
-        displayName: name || "Analista Financeiro",
-        email: "analista@agrocredit.local",
-        isAnonymous: true,
-        emailVerified: false
-      } as any
-    };
   }
+  return userCredential;
 };
 
 export const loginWithEmail = async (email: string, pass: string) => {
